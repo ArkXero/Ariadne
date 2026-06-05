@@ -3,12 +3,14 @@ import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { execa } from "execa";
 import { afterEach, describe, expect, it } from "vitest";
+import { initCommand } from "../src/commands/init.js";
 import { loadConfig } from "../src/core/config.js";
 import { snapshotForbiddenFiles, diffForbiddenSnapshots } from "../src/core/forbidden-files.js";
 import { countDiffChangedLines, getChangedFiles, getGitDiff } from "../src/core/git.js";
+import { buildHtmlReport, formatTerminalSummary } from "../src/core/report.js";
 import { scoreTaskRun } from "../src/core/scorer.js";
 import { loadTasks } from "../src/core/task-loader.js";
-import type { AriadneConfig, CommandExecution, TaskRunResult } from "../src/types/index.js";
+import type { AriadneConfig, AriadneRun, CommandExecution, TaskRunResult } from "../src/types/index.js";
 
 const tempDirs: string[] = [];
 
@@ -127,6 +129,27 @@ describe("config loading", () => {
   });
 });
 
+describe("init generation", () => {
+  it("generates config and task YAML that load through Ariadne schemas", async () => {
+    const cwd = await makeTempDir("ariadne-init-");
+
+    await initCommand(cwd);
+
+    const { config: loadedConfig } = await loadConfig(cwd);
+    const tasks = await loadTasks(cwd, loadedConfig.tasks.directory);
+
+    expect(loadedConfig.verification.commands).toEqual([]);
+    expect(loadedConfig.checks.forbidden_files).toEqual([".env", ".env.*"]);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: "example",
+      name: "Example reliability task",
+      metadata: {},
+      prompt: expect.stringContaining("Inspect this repository")
+    });
+  });
+});
+
 describe("task loading", () => {
   it("loads YAML tasks recursively with deterministic ordering and defaults", async () => {
     const cwd = await makeTempDir("ariadne-tasks-");
@@ -211,6 +234,83 @@ describe("scorer", () => {
       "max_diff_lines",
       "forbidden_commands"
     ]);
+  });
+
+  it("labels passing agent plus failing verification as verification_failed", () => {
+    const score = scoreTaskRun(
+      runResult({
+        agent: command({ exitCode: 0 }),
+        verification: [command({ command: "pnpm typecheck", exitCode: 127 })]
+      }),
+      config()
+    );
+
+    expect(score.passed).toBe(false);
+    expect(score.status).toBe("verification_failed");
+    expect(score.checks.find((check) => check.name === "verification")?.details).toEqual({
+      failedCommands: [
+        {
+          command: "pnpm typecheck",
+          exitCode: 127
+        }
+      ]
+    });
+  });
+});
+
+describe("report output", () => {
+  it("separates agent and verification failures with failed command details", () => {
+    const taskResult = runResult({
+      agent: command({ command: "cat", exitCode: 0 }),
+      verification: [
+        command({
+          command: "pnpm typecheck",
+          exitCode: 127,
+          stdout: "checking config\n",
+          stderr: [
+            "startup noise",
+            "",
+            "sh: pnpm: command not found"
+          ].join("\n")
+        })
+      ]
+    });
+    const scoredResult: TaskRunResult = {
+      ...taskResult,
+      score: scoreTaskRun(taskResult, config())
+    };
+    const run: AriadneRun = {
+      version: 1,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:00.010Z",
+      durationMs: 10,
+      cwd: "/tmp/ariadne",
+      configPath: "/tmp/ariadne/ariadne.yml",
+      config: config(),
+      results: [scoredResult],
+      summary: {
+        total: 1,
+        passed: 0,
+        failed: 1,
+        status: "verification_failed"
+      }
+    };
+
+    const terminalSummary = formatTerminalSummary(run);
+    const htmlReport = buildHtmlReport(run);
+
+    expect(terminalSummary).toContain("Status: verification_failed");
+    expect(terminalSummary).toContain("VERIFICATION_FAILED task-1 - Task 1");
+    expect(terminalSummary).toContain("Agent: passed (exit 0");
+    expect(terminalSummary).toContain("Verification: failed (1 commands)");
+    expect(terminalSummary).toContain("Failed command: pnpm typecheck");
+    expect(terminalSummary).toContain("Exit code: 127");
+    expect(terminalSummary).toContain("Reason: sh: pnpm: command not found");
+    expect(terminalSummary).toContain("Stderr (last 2 useful lines):");
+    expect(htmlReport).toContain("Verification Failures");
+    expect(htmlReport).toContain("pnpm typecheck");
+    expect(htmlReport).toContain("Exit code: 127");
+    expect(htmlReport).toContain("Reason: sh: pnpm: command not found");
   });
 });
 

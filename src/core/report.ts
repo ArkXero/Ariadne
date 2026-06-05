@@ -1,6 +1,8 @@
 import path from "node:path";
 import fs from "fs-extra";
-import type { AriadneRun, ScoreCheck, TaskRunResult } from "../types/index.js";
+import type { AriadneRun, CommandExecution, ScoreCheck, TaskRunResult, TaskScoreStatus } from "../types/index.js";
+
+const LOG_TAIL_LINES = 8;
 
 function escapeHtml(value: unknown): string {
   return String(value)
@@ -11,12 +13,58 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, "&#039;");
 }
 
-function statusLabel(passed: boolean): string {
+function checkStatusLabel(passed: boolean): string {
   return passed ? "PASS" : "FAIL";
 }
 
+function scoreStatus(result: TaskRunResult): TaskScoreStatus {
+  return result.score.status ?? (result.score.passed ? "passed" : "failed");
+}
+
+function statusLabel(status: TaskScoreStatus): string {
+  return status.toUpperCase();
+}
+
+function passFailLabel(passed: boolean): string {
+  return passed ? "passed" : "failed";
+}
+
 function formatCheck(check: ScoreCheck): string {
-  return `${statusLabel(check.passed)} ${check.name}: ${check.message}`;
+  return `${checkStatusLabel(check.passed)} ${check.name}: ${check.message}`;
+}
+
+function usefulTailLines(value: string, limit = LOG_TAIL_LINES): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0)
+    .slice(-limit);
+}
+
+function commandReason(command: CommandExecution): string {
+  if (command.timedOut) {
+    return "command timed out";
+  }
+
+  return usefulTailLines(command.stderr, 1)[0]
+    ?? usefulTailLines(command.stdout, 1)[0]
+    ?? `command exited with code ${command.exitCode}`;
+}
+
+function failedVerificationCommands(result: TaskRunResult): CommandExecution[] {
+  return result.verification.filter((command) => command.exitCode !== 0);
+}
+
+function formatOutputTail(label: string, output: string): string[] {
+  const lines = usefulTailLines(output);
+  if (lines.length === 0) {
+    return [];
+  }
+
+  return [
+    `  ${label} (last ${lines.length} useful lines):`,
+    ...lines.map((line) => `    ${line}`)
+  ];
 }
 
 export async function findLatestRunFile(cwd: string): Promise<string> {
@@ -48,14 +96,26 @@ export async function loadRunReport(runPath: string): Promise<AriadneRun> {
 export function formatTerminalSummary(run: AriadneRun): string {
   const lines = [
     `Ariadne run: ${run.startedAt}`,
+    `Status: ${run.summary.status ?? (run.summary.failed > 0 ? "failed" : "passed")}`,
     `Duration: ${run.durationMs}ms`,
     `Tasks: ${run.summary.total}, passed: ${run.summary.passed}, failed: ${run.summary.failed}`,
     ""
   ];
 
   for (const result of run.results) {
-    lines.push(`${statusLabel(result.score.passed)} ${result.task.id} - ${result.task.name}`);
-    lines.push(`  Agent exit: ${result.agent.exitCode}, runtime: ${result.agent.runtimeMs}ms`);
+    const agentPassed = result.agent.exitCode === 0;
+    const failedVerification = failedVerificationCommands(result);
+
+    lines.push(`${statusLabel(scoreStatus(result))} ${result.task.id} - ${result.task.name}`);
+    lines.push(`  Agent: ${passFailLabel(agentPassed)} (exit ${result.agent.exitCode}, runtime ${result.agent.runtimeMs}ms)`);
+    lines.push(`  Verification: ${passFailLabel(failedVerification.length === 0)} (${result.verification.length} commands)`);
+    for (const command of failedVerification) {
+      lines.push(`  Failed command: ${command.command}`);
+      lines.push(`  Exit code: ${command.exitCode}`);
+      lines.push(`  Reason: ${commandReason(command)}`);
+      lines.push(...formatOutputTail("Stdout", command.stdout));
+      lines.push(...formatOutputTail("Stderr", command.stderr));
+    }
     lines.push(`  Changed files: ${result.trace.changedFiles.length}, diff lines: ${result.trace.diffLineCount}`);
     if (result.trace.forbiddenFileChanges.length > 0) {
       lines.push(`  Forbidden file changes: ${result.trace.forbiddenFileChanges.join(", ")}`);
@@ -76,22 +136,58 @@ function renderChecks(checks: ScoreCheck[]): string {
   return checks.map((check) => {
     const className = check.passed ? "pass" : "fail";
     const details = check.details ? `<pre>${escapeHtml(JSON.stringify(check.details, null, 2))}</pre>` : "";
-    return `<li class="${className}"><strong>${escapeHtml(statusLabel(check.passed))} ${escapeHtml(check.name)}</strong><span>${escapeHtml(check.message)}</span>${details}</li>`;
+    return `<li class="${className}"><strong>${escapeHtml(checkStatusLabel(check.passed))} ${escapeHtml(check.name)}</strong><span>${escapeHtml(check.message)}</span>${details}</li>`;
   }).join("");
 }
 
+function renderOutputTail(label: string, output: string): string {
+  const lines = usefulTailLines(output);
+  if (lines.length === 0) {
+    return "";
+  }
+
+  return `<h4>${escapeHtml(label)} (last ${escapeHtml(lines.length)} useful lines)</h4><pre>${escapeHtml(lines.join("\n"))}</pre>`;
+}
+
+function renderFailedVerification(command: CommandExecution): string {
+  return `<li class="fail">
+    <strong>Failed verification command</strong>
+    <span><code>${escapeHtml(command.command)}</code></span>
+    <span>Exit code: ${escapeHtml(command.exitCode)}</span>
+    <span>Reason: ${escapeHtml(commandReason(command))}</span>
+    ${renderOutputTail("Stdout", command.stdout)}
+    ${renderOutputTail("Stderr", command.stderr)}
+  </li>`;
+}
+
+function renderVerificationFailures(result: TaskRunResult): string {
+  const failedVerification = failedVerificationCommands(result);
+  if (failedVerification.length === 0) {
+    return "";
+  }
+
+  return `<h3>Verification Failures</h3>
+  <ul>${failedVerification.map((command) => renderFailedVerification(command)).join("")}</ul>`;
+}
+
 function renderTask(result: TaskRunResult): string {
+  const agentPassed = result.agent.exitCode === 0;
+  const failedVerification = failedVerificationCommands(result);
+
   return `<section class="task">
   <header>
-    <h2>${escapeHtml(statusLabel(result.score.passed))} ${escapeHtml(result.task.id)}</h2>
+    <h2>${escapeHtml(statusLabel(scoreStatus(result)))} ${escapeHtml(result.task.id)}</h2>
     <p>${escapeHtml(result.task.name)}</p>
   </header>
   <div class="grid">
+    <div><strong>Agent</strong><span>${escapeHtml(passFailLabel(agentPassed))}</span></div>
     <div><strong>Agent exit</strong><span>${escapeHtml(result.agent.exitCode)}</span></div>
     <div><strong>Agent runtime</strong><span>${escapeHtml(result.agent.runtimeMs)}ms</span></div>
+    <div><strong>Verification</strong><span>${escapeHtml(passFailLabel(failedVerification.length === 0))}</span></div>
     <div><strong>Changed files</strong><span>${escapeHtml(result.trace.changedFiles.length)}</span></div>
     <div><strong>Diff lines</strong><span>${escapeHtml(result.trace.diffLineCount)}</span></div>
   </div>
+  ${renderVerificationFailures(result)}
   <h3>Checks</h3>
   <ul>${renderChecks(result.score.checks)}</ul>
   <h3>Changed files</h3>
@@ -258,6 +354,7 @@ export function buildHtmlReport(run: AriadneRun): string {
       <p>Run started ${escapeHtml(run.startedAt)} from ${escapeHtml(run.cwd)}</p>
       <div class="summary">
         <div><strong>Tasks</strong><span>${escapeHtml(run.summary.total)}</span></div>
+        <div><strong>Status</strong><span>${escapeHtml(run.summary.status ?? (run.summary.failed > 0 ? "failed" : "passed"))}</span></div>
         <div><strong>Passed</strong><span>${escapeHtml(run.summary.passed)}</span></div>
         <div><strong>Failed</strong><span>${escapeHtml(run.summary.failed)}</span></div>
         <div><strong>Duration</strong><span>${escapeHtml(run.durationMs)}ms</span></div>

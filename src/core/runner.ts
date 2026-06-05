@@ -6,7 +6,7 @@ import { diffForbiddenSnapshots, snapshotForbiddenFiles } from "./forbidden-file
 import { countDiffChangedLines, getChangedFiles, getGitDiff, isGitRepository } from "./git.js";
 import { scoreTaskRun } from "./scorer.js";
 import { loadTasks } from "./task-loader.js";
-import type { AriadneRun, CommandExecution, TaskRunResult } from "../types/index.js";
+import type { AriadneRun, CommandExecution, TaskRunResult, TaskScoreStatus } from "../types/index.js";
 
 interface RunOptions {
   cwd: string;
@@ -78,6 +78,22 @@ function extractObservedCommands(logs: string): string[] {
   }
 
   return unique(observed);
+}
+
+function summarizeRunStatus(results: TaskRunResult[]): TaskScoreStatus {
+  if (results.every((result) => result.score.passed)) {
+    return "passed";
+  }
+
+  if (results.some((result) => result.score.status === "agent_failed")) {
+    return "agent_failed";
+  }
+
+  if (results.some((result) => result.score.status === "verification_failed")) {
+    return "verification_failed";
+  }
+
+  return "failed";
 }
 
 async function runTask(input: {
@@ -175,7 +191,8 @@ export async function runAriadne(options: RunOptions): Promise<AriadneRun & { ou
   const summary = {
     total: results.length,
     passed: results.filter((result) => result.score.passed).length,
-    failed: results.filter((result) => !result.score.passed).length
+    failed: results.filter((result) => !result.score.passed).length,
+    status: summarizeRunStatus(results)
   };
   const run: AriadneRun = {
     version: 1,

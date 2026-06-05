@@ -41,6 +41,13 @@ pnpm dev report
 - `.ariadne/tasks/example.yml`
 - `.ariadne/runs/`
 
+For Codex, set `agent.command` to read Ariadne's stdin prompt explicitly:
+
+```yaml
+agent:
+  command: "codex exec --sandbox workspace-write -"
+```
+
 `ariadne run` reads `ariadne.yml`, loads YAML tasks, sends each task prompt to `agent.command` via stdin, runs configured verification commands, captures git traces, scores checks, and writes `.ariadne/runs/<timestamp>.json`.
 
 `ariadne report` reads the latest run JSON, prints a terminal summary, and writes `.ariadne/runs/latest-report.html`.

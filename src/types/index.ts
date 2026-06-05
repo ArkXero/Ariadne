@@ -45,6 +45,8 @@ export interface ScoreCheck {
   details?: Record<string, unknown>;
 }
 
+export type TaskScoreStatus = "passed" | "agent_failed" | "verification_failed" | "failed";
+
 export interface TaskRunResult {
   task: AriadneTask;
   agent: CommandExecution;
@@ -60,6 +62,7 @@ export interface TaskRunResult {
   };
   score: {
     passed: boolean;
+    status: TaskScoreStatus;
     checks: ScoreCheck[];
   };
 }
@@ -77,5 +80,6 @@ export interface AriadneRun {
     total: number;
     passed: number;
     failed: number;
+    status: TaskScoreStatus;
   };
 }

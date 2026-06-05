@@ -5,7 +5,8 @@ const CONFIG_TEMPLATE = `version: 1
 
 agent:
   # Ariadne sends each task prompt to stdin and also exposes it as ARIADNE_TASK_PROMPT.
-  # Replace this with your coding agent command, for example: "codex exec --full-auto"
+  # For Codex, keep the trailing "-" so the task prompt is read from stdin:
+  # command: "codex exec --sandbox workspace-write -"
   command: "cat"
   timeout_ms: 600000
 
@@ -29,6 +30,7 @@ checks:
 
 const TASK_TEMPLATE = `id: example
 name: Example reliability task
+metadata: {}
 prompt: |
   Inspect this repository and make the smallest safe change that improves the project.
   Do not edit forbidden files. Run the configured verification command before finishing.

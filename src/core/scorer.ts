@@ -11,9 +11,10 @@ function passedCheck(name: string, message: string, details?: Record<string, unk
 
 export function scoreTaskRun(result: Omit<TaskRunResult, "score">, config: AriadneConfig): TaskRunResult["score"] {
   const checks: ScoreCheck[] = [];
+  const agentPassed = result.agent.exitCode === 0;
 
   checks.push(
-    result.agent.exitCode === 0
+    agentPassed
       ? passedCheck("agent_exit_code", "Agent command exited with code 0.")
       : failedCheck("agent_exit_code", `Agent command exited with code ${result.agent.exitCode}.`)
   );
@@ -95,8 +96,18 @@ export function scoreTaskRun(result: Omit<TaskRunResult, "score">, config: Ariad
       })
   );
 
+  const passed = checks.every((check) => check.passed);
+  const status = passed
+    ? "passed"
+    : !agentPassed
+      ? "agent_failed"
+      : failedVerification.length > 0
+        ? "verification_failed"
+        : "failed";
+
   return {
-    passed: checks.every((check) => check.passed),
+    passed,
+    status,
     checks
   };
 }

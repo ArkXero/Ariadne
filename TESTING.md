@@ -35,6 +35,7 @@ pnpm check
 ```sh
 pnpm typecheck
 pnpm build
+pnpm test
 pnpm smoke
 ```
 
@@ -43,6 +44,8 @@ Use these individually while developing:
 ```sh
 pnpm typecheck
 pnpm build
+pnpm test
+pnpm test:watch
 pnpm smoke
 ```
 
@@ -137,12 +140,6 @@ Current MVP uses:
 
 - TypeScript compiler checks.
 - Build check.
+- Vitest unit tests for config loading, task loading, scorer behavior, git helpers, and forbidden-file snapshots.
 - Smoke test for passing init/run/report.
 - Smoke test for forbidden ignored file failure.
-
-Next useful additions:
-
-- Unit tests for config validation.
-- Unit tests for task loading.
-- Unit tests for scorer checks.
-- Unit tests for report formatting.
