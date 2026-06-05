@@ -1,0 +1,37 @@
+{
+  "name": "ariadne",
+  "version": "0.1.0",
+  "description": "Local CLI for coding-agent reliability evals.",
+  "type": "module",
+  "bin": {
+    "ariadne": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "pnpm typecheck && pnpm build && pnpm smoke",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "pnpm build && node dist/cli.js",
+    "ariadne": "node dist/cli.js",
+    "smoke": "node scripts/smoke-test.mjs"
+  },
+  "dependencies": {
+    "commander": "^14.0.2",
+    "execa": "^9.6.0",
+    "fs-extra": "^11.3.2",
+    "minimatch": "^10.1.1",
+    "yaml": "^2.8.2",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.1.2"
+}
