@@ -1,14 +1,19 @@
 {
-  "name": "ariadne",
+  "name": "@arkxronts/ariadne",
   "version": "0.1.0",
-  "description": "Local CLI for coding-agent reliability evals.",
+  "description": "Local CLI for coding-agent reliability and testing evals.",
   "type": "module",
   "bin": {
     "ariadne": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "pnpm typecheck && pnpm build && pnpm test && pnpm smoke",
@@ -36,5 +41,5 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@11.1.2"
+  "packageManager": "pnpm@10.34.1"
 }

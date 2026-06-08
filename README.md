@@ -9,6 +9,23 @@ pnpm install
 pnpm build
 ```
 
+## Developer preview installation
+
+Developer preview installation requires pnpm `10.34.1`:
+
+```sh
+git clone https://github.com/ArkXero/Ariadne.git ariadne
+cd ariadne
+pnpm install
+pnpm build
+pnpm link --global
+ariadne --help
+```
+
+If pnpm reports that its global bin directory is missing from `PATH`, run `pnpm setup`, restart the shell, and repeat the link command.
+
+The linked `ariadne` command runs the built `dist/cli.js`. Rerun `pnpm build` after source edits.
+
 ## Commands
 
 ```sh

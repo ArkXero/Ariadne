@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,10 +7,14 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "dist", "cli.js");
 
-function run(command, args, cwd, expectedExitCode = 0) {
+function run(command, args, cwd, expectedExitCode = 0, env = {}) {
   const result = spawnSync(command, args, {
     cwd,
-    encoding: "utf8"
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ...env
+    }
   });
 
   if (result.status !== expectedExitCode) {
@@ -27,6 +31,27 @@ function run(command, args, cwd, expectedExitCode = 0) {
   }
 
   return result;
+}
+
+async function assertGlobalLinkFlow() {
+  const pnpmHome = await mkdtemp(path.join(os.tmpdir(), "ariadne-pnpm-home-"));
+  const env = {
+    PNPM_HOME: pnpmHome,
+    PATH: `${pnpmHome}${path.delimiter}${process.env.PATH ?? ""}`
+  };
+
+  try {
+    run("pnpm", ["link", "--global"], repoRoot, 0, env);
+    const helpResult = run("ariadne", ["--help"], repoRoot, 0, env);
+
+    if (!helpResult.stdout.includes("Usage: ariadne [options] [command]")) {
+      throw new Error(`Expected linked Ariadne usage output, got ${helpResult.stdout}`);
+    }
+
+    console.log(`global link flow ok: ${pnpmHome}`);
+  } finally {
+    await rm(pnpmHome, { recursive: true, force: true });
+  }
 }
 
 async function latestRunJson(cwd) {
@@ -113,5 +138,6 @@ async function assertForbiddenFileFailure() {
   console.log(`forbidden file flow ok: ${cwd}`);
 }
 
+await assertGlobalLinkFlow();
 await assertPassingFlow();
 await assertForbiddenFileFailure();

@@ -5,7 +5,7 @@ This guide shows how to verify Ariadne from a fresh checkout and how contributor
 ## Prerequisites
 
 - Node.js 20 or newer
-- pnpm 11
+- pnpm 10.34.1
 - git
 
 Check versions:
@@ -48,6 +48,29 @@ pnpm test
 pnpm test:watch
 pnpm smoke
 ```
+
+`pnpm smoke` uses an isolated temporary `PNPM_HOME` to verify `pnpm link --global` and the linked `ariadne --help` command without changing the host global pnpm installation. It also verifies direct help forms, the passing CLI flow, and forbidden ignored-file detection.
+
+## Manual developer-preview installation
+
+From a parent directory, verify the exact developer-preview installation flow:
+
+```sh
+git clone https://github.com/ArkXero/Ariadne.git ariadne
+cd ariadne
+pnpm install
+pnpm build
+pnpm link --global
+ariadne --help
+```
+
+Expected result:
+
+- `pnpm link --global` succeeds with pnpm `10.34.1`.
+- `ariadne --help` prints Ariadne usage and commands.
+- Linked CLI runs `dist/cli.js`; rerun `pnpm build` after source edits.
+
+If pnpm reports that its global bin directory is missing from `PATH`, run `pnpm setup`, restart the shell, and repeat the link command.
 
 ## Manual CLI smoke test
 
@@ -157,3 +180,4 @@ Current MVP uses:
 - Vitest unit tests for config loading, doctor diagnostics, task loading, scorer behavior, git helpers, and forbidden-file snapshots.
 - Smoke test for passing init/run/list/report.
 - Smoke test for forbidden ignored file failure.
+- Isolated global-link smoke test for `pnpm link --global` and linked `ariadne --help`.

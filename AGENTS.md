@@ -29,6 +29,8 @@ Keep the MVP focused:
 
 Use pnpm.
 
+Use pnpm `10.34.1`; exact developer-preview global linking depends on pnpm 10 behavior.
+
 ```sh
 pnpm install
 pnpm typecheck
@@ -36,6 +38,15 @@ pnpm build
 pnpm dev --help
 pnpm ariadne --help
 pnpm ariadne -h
+```
+
+For developer-preview global installation:
+
+```sh
+pnpm install
+pnpm build
+pnpm link --global
+ariadne --help
 ```
 
 For local smoke tests after `pnpm build`:
@@ -48,6 +59,8 @@ node dist/cli.js report
 ```
 
 Prefer running smoke tests in a temporary git repo so generated `.ariadne/` files do not pollute this repository.
+
+`pnpm smoke` verifies global linking with an isolated temporary `PNPM_HOME` and removes it afterward, leaving the host global pnpm installation untouched.
 
 ## Repository map
 
