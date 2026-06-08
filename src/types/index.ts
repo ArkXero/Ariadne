@@ -7,6 +7,12 @@ export interface AriadneConfig {
   tasks: {
     directory: string;
   };
+  list: {
+    csv: {
+      enabled: boolean;
+      path: string;
+    };
+  };
   verification: {
     commands: string[];
     timeout_ms: number;

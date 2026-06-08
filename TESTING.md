@@ -70,6 +70,7 @@ node "$PWD/dist/cli.js" -- --help >/dev/null
 node "$PWD/dist/cli.js" init
 node "$PWD/dist/cli.js" doctor
 node "$PWD/dist/cli.js" run
+node "$PWD/dist/cli.js" list
 node "$PWD/dist/cli.js" report
 ```
 
@@ -81,6 +82,8 @@ Expected result:
 - `.ariadne/runs/latest-report.html` exists.
 - `.gitignore` contains `/.ariadne/` and `/ariadne.yml`.
 - `ariadne doctor` reports no errors.
+- `ariadne list` includes the generated run.
+- When `list.csv.enabled` is `true`, `ariadne list` writes configured CSV path.
 - Terminal summary reports `failed: 0`.
 
 ## Failure smoke test
@@ -147,5 +150,5 @@ Current MVP uses:
 - TypeScript compiler checks.
 - Build check.
 - Vitest unit tests for config loading, doctor diagnostics, task loading, scorer behavior, git helpers, and forbidden-file snapshots.
-- Smoke test for passing init/run/report.
+- Smoke test for passing init/run/list/report.
 - Smoke test for forbidden ignored file failure.

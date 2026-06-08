@@ -13,6 +13,12 @@ agent:
 tasks:
   directory: ".ariadne/tasks"
 
+list:
+  csv:
+    # Set to true to write a CSV snapshot whenever "ariadne list" runs.
+    enabled: false
+    path: ".ariadne/runs/runs.csv"
+
 verification:
   # Add project-specific checks, for example: "npm test" or "pnpm test".
   commands: []

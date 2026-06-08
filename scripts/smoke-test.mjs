@@ -53,13 +53,24 @@ async function assertPassingFlow() {
   run("git", ["check-ignore", ".ariadne/runs", ".ariadne/tasks/example.yml", "ariadne.yml"], cwd);
   run(process.execPath, [cliPath, "doctor"], cwd);
   run(process.execPath, [cliPath, "run"], cwd);
+  const configPath = path.join(cwd, "ariadne.yml");
+  const config = await readFile(configPath, "utf8");
+  await writeFile(configPath, config.replace("    enabled: false", "    enabled: true"));
+  const listResult = run(process.execPath, [cliPath, "list"], cwd);
   run(process.execPath, [cliPath, "report"], cwd);
 
   const runPath = await latestRunJson(cwd);
   const runJson = JSON.parse(await readFile(runPath, "utf8"));
+  const runCsv = await readFile(path.join(cwd, ".ariadne", "runs", "runs.csv"), "utf8");
 
   if (runJson.summary.total !== 1 || runJson.summary.failed !== 0) {
     throw new Error(`Expected passing smoke run, got ${JSON.stringify(runJson.summary)}`);
+  }
+  if (!listResult.stdout.includes(".ariadne/runs/") || !listResult.stdout.includes("passed") || !listResult.stdout.includes("CSV written: .ariadne/runs/runs.csv")) {
+    throw new Error(`Expected list output to include passing run, got ${listResult.stdout}`);
+  }
+  if (!runCsv.startsWith("Started,Status,Task,Duration,Path\n") || !runCsv.includes(",passed,")) {
+    throw new Error(`Expected list CSV to include passing run, got ${runCsv}`);
   }
 
   console.log(`passing flow ok: ${cwd}`);

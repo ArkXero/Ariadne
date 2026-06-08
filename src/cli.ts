@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { doctorCommand } from "./commands/doctor.js";
 import { initCommand } from "./commands/init.js";
+import { listCommand } from "./commands/list.js";
 import { reportCommand } from "./commands/report.js";
 import { runCommand } from "./commands/run.js";
 
@@ -36,6 +37,13 @@ program
   .option("-c, --config <path>", "Path to Ariadne config file.", "ariadne.yml")
   .action(async (options: { config: string }) => {
     await runCommand(process.cwd(), options.config);
+  });
+
+program
+  .command("list")
+  .description("List all Ariadne runs in this project.")
+  .action(async () => {
+    await listCommand(process.cwd());
   });
 
 program

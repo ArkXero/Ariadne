@@ -17,6 +17,7 @@ pnpm ariadne -h
 pnpm ariadne init
 pnpm ariadne doctor
 pnpm ariadne run
+pnpm ariadne list
 pnpm ariadne report
 ```
 
@@ -36,6 +37,7 @@ During development, use:
 pnpm dev init
 pnpm dev doctor
 pnpm dev run
+pnpm dev list
 pnpm dev report
 ```
 
@@ -60,6 +62,17 @@ agent:
 `ariadne run` reads `ariadne.yml`, loads YAML tasks, sends each task prompt to `agent.command` via stdin, runs configured verification commands, captures git traces, scores checks, and writes `.ariadne/runs/<timestamp>.json`.
 
 `ariadne doctor` validates config and task files, checks command executables, and detects missing package manager scripts before a run.
+
+`ariadne list` prints every run in the project, newest first, with status, task, duration, and JSON path.
+
+To also generate a CSV snapshot when `ariadne list` runs, enable it in `ariadne.yml`:
+
+```yaml
+list:
+  csv:
+    enabled: true
+    path: ".ariadne/runs/runs.csv"
+```
 
 `ariadne report` reads the latest run JSON, prints a terminal summary, and writes `.ariadne/runs/latest-report.html`.
 
