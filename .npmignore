@@ -1,0 +1,17 @@
+# Source and tests
+src/
+tests/
+
+# Development tooling and contributor docs
+scripts/
+tsconfig.json
+pnpm-lock.yaml
+AGENTS.md
+TESTING.md
+
+# Local and generated artifacts
+.ariadne/
+coverage/
+*.log
+*.tgz
+*.tsbuildinfo
