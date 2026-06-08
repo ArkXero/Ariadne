@@ -36,6 +36,8 @@ prompt: |
   Do not edit forbidden files. Run the configured verification command before finishing.
 `;
 
+const GITIGNORE_ENTRIES = ["/.ariadne/", "/ariadne.yml"];
+
 async function writeIfMissing(filePath: string, contents: string): Promise<"created" | "skipped"> {
   if (await fs.pathExists(filePath)) {
     return "skipped";
@@ -43,6 +45,24 @@ async function writeIfMissing(filePath: string, contents: string): Promise<"crea
 
   await fs.outputFile(filePath, contents);
   return "created";
+}
+
+async function ensureGitIgnore(cwd: string): Promise<"created" | "updated" | "unchanged"> {
+  const gitignorePath = path.join(cwd, ".gitignore");
+  const exists = await fs.pathExists(gitignorePath);
+  const contents = exists ? await fs.readFile(gitignorePath, "utf8") : "";
+  const lines = new Set(contents.split(/\r?\n/).map((line) => line.trim()));
+  const missingEntries = GITIGNORE_ENTRIES.filter((entry) => !lines.has(entry));
+
+  if (missingEntries.length === 0) {
+    return "unchanged";
+  }
+
+  const separator = contents.length === 0 ? "" : contents.endsWith("\n") ? "\n" : "\n\n";
+  const block = ["# Ariadne", ...missingEntries, ""].join("\n");
+  await fs.outputFile(gitignorePath, `${contents}${separator}${block}`);
+
+  return exists ? "updated" : "created";
 }
 
 export async function initCommand(cwd: string): Promise<void> {
@@ -56,8 +76,10 @@ export async function initCommand(cwd: string): Promise<void> {
 
   const configStatus = await writeIfMissing(configPath, CONFIG_TEMPLATE);
   const taskStatus = await writeIfMissing(exampleTaskPath, TASK_TEMPLATE);
+  const gitignoreStatus = await ensureGitIgnore(cwd);
 
   console.log(`ariadne.yml ${configStatus}`);
   console.log(`.ariadne/tasks/example.yml ${taskStatus}`);
   console.log(".ariadne/runs ready");
+  console.log(`.gitignore ${gitignoreStatus}`);
 }

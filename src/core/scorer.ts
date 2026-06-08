@@ -1,5 +1,5 @@
 import { matchesFilePattern } from "./path-match.js";
-import type { AriadneConfig, ScoreCheck, TaskRunResult } from "../types/index.js";
+import type { AriadneConfig, CommandExecution, CommandScore, ScoreCheck, TaskRunResult, TaskScoreStatus } from "../types/index.js";
 
 function failedCheck(name: string, message: string, details?: Record<string, unknown>): ScoreCheck {
   return { name, passed: false, message, details };
@@ -9,24 +9,42 @@ function passedCheck(name: string, message: string, details?: Record<string, unk
   return { name, passed: true, message, details };
 }
 
+function scoreCommand(command: CommandExecution): CommandScore {
+  return {
+    command: command.command,
+    passed: command.exitCode === 0 && !command.timedOut,
+    exitCode: command.exitCode,
+    timedOut: command.timedOut,
+    runtimeMs: command.runtimeMs
+  };
+}
+
 export function scoreTaskRun(result: Omit<TaskRunResult, "score">, config: AriadneConfig): TaskRunResult["score"] {
   const checks: ScoreCheck[] = [];
-  const agentPassed = result.agent.exitCode === 0;
+  const agentScore = scoreCommand(result.agent);
+  const agentPassed = agentScore.passed;
 
   checks.push(
     agentPassed
       ? passedCheck("agent_exit_code", "Agent command exited with code 0.")
-      : failedCheck("agent_exit_code", `Agent command exited with code ${result.agent.exitCode}.`)
+      : failedCheck(
+        "agent_exit_code",
+        result.agent.timedOut
+          ? `Agent command timed out after ${result.agent.runtimeMs}ms.`
+          : `Agent command exited with code ${result.agent.exitCode}.`
+      )
   );
 
-  const failedVerification = result.verification.filter((commandResult) => commandResult.exitCode !== 0);
+  const verificationCommands = result.verification.map((commandResult) => scoreCommand(commandResult));
+  const failedVerification = verificationCommands.filter((commandResult) => !commandResult.passed);
   checks.push(
     failedVerification.length === 0
-      ? passedCheck("verification", "All verification commands passed.", { commands: result.verification.map((item) => item.command) })
+      ? passedCheck("verification", "All verification commands passed.", { commands: verificationCommands.map((item) => item.command) })
       : failedCheck("verification", "One or more verification commands failed.", {
         failedCommands: failedVerification.map((item) => ({
           command: item.command,
-          exitCode: item.exitCode
+          exitCode: item.exitCode,
+          timedOut: item.timedOut
         }))
       })
   );
@@ -97,17 +115,28 @@ export function scoreTaskRun(result: Omit<TaskRunResult, "score">, config: Ariad
   );
 
   const passed = checks.every((check) => check.passed);
-  const status = passed
-    ? "passed"
-    : !agentPassed
-      ? "agent_failed"
-      : failedVerification.length > 0
-        ? "verification_failed"
-        : "failed";
+  const checkFailures = checks.filter((check) => !check.passed && check.name !== "agent_exit_code" && check.name !== "verification");
+  const hasTimeout = result.agent.timedOut || result.verification.some((commandResult) => commandResult.timedOut);
+  let status: TaskScoreStatus = "passed";
+  if (hasTimeout) {
+    status = "timeout";
+  } else if (!agentPassed) {
+    status = "agent_failed";
+  } else if (failedVerification.length > 0) {
+    status = "verification_failed";
+  } else if (checkFailures.length > 0) {
+    status = "check_failed";
+  }
 
   return {
     passed,
     status,
+    agent: agentScore,
+    verification: {
+      passed: failedVerification.length === 0,
+      commands: verificationCommands,
+      failedCommands: failedVerification
+    },
     checks
   };
 }

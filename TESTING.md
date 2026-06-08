@@ -64,7 +64,11 @@ tmpdir="$(mktemp -d)"
 git -C "$tmpdir" init
 
 node "$PWD/dist/cli.js" init --help >/dev/null
+node "$PWD/dist/cli.js" --help >/dev/null
+node "$PWD/dist/cli.js" -h >/dev/null
+node "$PWD/dist/cli.js" -- --help >/dev/null
 node "$PWD/dist/cli.js" init
+node "$PWD/dist/cli.js" doctor
 node "$PWD/dist/cli.js" run
 node "$PWD/dist/cli.js" report
 ```
@@ -75,6 +79,8 @@ Expected result:
 - `.ariadne/tasks/example.yml` exists.
 - `.ariadne/runs/<timestamp>.json` exists.
 - `.ariadne/runs/latest-report.html` exists.
+- `.gitignore` contains `/.ariadne/` and `/ariadne.yml`.
+- `ariadne doctor` reports no errors.
 - Terminal summary reports `failed: 0`.
 
 ## Failure smoke test
@@ -86,7 +92,7 @@ tmpdir="$(mktemp -d)"
 git -C "$tmpdir" init
 
 node "$PWD/dist/cli.js" init
-printf ".env\n" > "$tmpdir/.gitignore"
+printf ".env\n" >> "$tmpdir/.gitignore"
 perl -0pi -e 's/command: "cat"/command: "sh -c '\''cat > .env'\''"/' "$tmpdir/ariadne.yml"
 
 set +e
@@ -140,6 +146,6 @@ Current MVP uses:
 
 - TypeScript compiler checks.
 - Build check.
-- Vitest unit tests for config loading, task loading, scorer behavior, git helpers, and forbidden-file snapshots.
+- Vitest unit tests for config loading, doctor diagnostics, task loading, scorer behavior, git helpers, and forbidden-file snapshots.
 - Smoke test for passing init/run/report.
 - Smoke test for forbidden ignored file failure.

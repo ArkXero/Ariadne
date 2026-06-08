@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { doctorCommand } from "./commands/doctor.js";
 import { initCommand } from "./commands/init.js";
 import { reportCommand } from "./commands/report.js";
 import { runCommand } from "./commands/run.js";
 
 const program = new Command();
+const argv = process.argv[2] === "--"
+  ? [...process.argv.slice(0, 2), ...process.argv.slice(3)]
+  : process.argv;
 
 program
   .name("ariadne")
@@ -16,6 +20,14 @@ program
   .description("Create Ariadne config, example task, and run directory.")
   .action(async () => {
     await initCommand(process.cwd());
+  });
+
+program
+  .command("doctor")
+  .description("Validate Ariadne configuration and commands before a run.")
+  .option("-c, --config <path>", "Path to Ariadne config file.", "ariadne.yml")
+  .action(async (options: { config: string }) => {
+    await doctorCommand(process.cwd(), options.config);
   });
 
 program
@@ -35,7 +47,7 @@ program
   });
 
 try {
-  await program.parseAsync(process.argv);
+  await program.parseAsync(argv);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message);

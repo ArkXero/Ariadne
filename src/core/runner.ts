@@ -40,7 +40,7 @@ async function runShellCommand(options: {
 
     return {
       command: options.command,
-      exitCode: result.timedOut ? 124 : result.exitCode ?? 0,
+      exitCode: result.timedOut ? 124 : result.exitCode ?? 1,
       stdout: result.stdout,
       stderr: result.stderr,
       runtimeMs: Date.now() - start,
@@ -85,6 +85,10 @@ function summarizeRunStatus(results: TaskRunResult[]): TaskScoreStatus {
     return "passed";
   }
 
+  if (results.some((result) => result.score.status === "timeout")) {
+    return "timeout";
+  }
+
   if (results.some((result) => result.score.status === "agent_failed")) {
     return "agent_failed";
   }
@@ -93,7 +97,7 @@ function summarizeRunStatus(results: TaskRunResult[]): TaskScoreStatus {
     return "verification_failed";
   }
 
-  return "failed";
+  return "check_failed";
 }
 
 async function runTask(input: {

@@ -33,14 +33,16 @@ Use pnpm.
 pnpm install
 pnpm typecheck
 pnpm build
-pnpm dev -- --help
-pnpm ariadne -- --help
+pnpm dev --help
+pnpm ariadne --help
+pnpm ariadne -h
 ```
 
 For local smoke tests after `pnpm build`:
 
 ```sh
 node dist/cli.js init
+node dist/cli.js doctor
 node dist/cli.js run
 node dist/cli.js report
 ```
@@ -53,6 +55,7 @@ Prefer running smoke tests in a temporary git repo so generated `.ariadne/` file
 - `src/commands/`: thin command handlers.
 - `src/core/config.ts`: `ariadne.yml` loading and validation.
 - `src/core/task-loader.ts`: task YAML discovery and validation.
+- `src/core/doctor.ts`: pre-run config, task, executable, and package script diagnostics.
 - `src/core/runner.ts`: task execution, verification, trace capture, run JSON writing.
 - `src/core/scorer.ts`: pass/fail scoring checks.
 - `src/core/git.ts`: git status and diff helpers.
@@ -137,7 +140,8 @@ If verification cannot run, state why.
 - Check `git status --short` before editing.
 - Do not overwrite or revert user work.
 - Do not commit unless explicitly asked.
-- Keep `.ariadne/runs/`, `dist/`, and `node_modules/` out of git.
+- `ariadne init` adds `/.ariadne/` and `/ariadne.yml` to host-project `.gitignore`.
+- Keep `dist/` and `node_modules/` out of git.
 - Do not store secrets in config examples, tasks, reports, or snapshots.
 
 ## Contributor notes

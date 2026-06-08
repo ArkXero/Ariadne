@@ -46,7 +46,12 @@ async function assertPassingFlow() {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "ariadne-pass-"));
 
   run("git", ["init"], cwd);
+  run(process.execPath, [cliPath, "--help"], cwd);
+  run(process.execPath, [cliPath, "-h"], cwd);
+  run(process.execPath, [cliPath, "--", "--help"], cwd);
   run(process.execPath, [cliPath, "init"], cwd);
+  run("git", ["check-ignore", ".ariadne/runs", ".ariadne/tasks/example.yml", "ariadne.yml"], cwd);
+  run(process.execPath, [cliPath, "doctor"], cwd);
   run(process.execPath, [cliPath, "run"], cwd);
   run(process.execPath, [cliPath, "report"], cwd);
 
@@ -66,7 +71,7 @@ async function assertForbiddenFileFailure() {
   run("git", ["init"], cwd);
   run(process.execPath, [cliPath, "init"], cwd);
 
-  await writeFile(path.join(cwd, ".gitignore"), ".env\n");
+  await writeFile(path.join(cwd, ".gitignore"), ".env\n", { flag: "a" });
   const configPath = path.join(cwd, "ariadne.yml");
   const config = await readFile(configPath, "utf8");
   await writeFile(configPath, config.replace('command: "cat"', 'command: "sh -c \'cat > .env\'"'));
