@@ -32,7 +32,7 @@ function run(command, args, cwd, expectedExitCode = 0) {
 async function latestRunJson(cwd) {
   const runsDir = path.join(cwd, ".ariadne", "runs");
   const files = (await readdir(runsDir))
-    .filter((file) => file.endsWith(".json"))
+    .filter((file) => file.endsWith(".json") && file !== "runs.json")
     .sort();
 
   if (files.length === 0) {
@@ -53,24 +53,36 @@ async function assertPassingFlow() {
   run("git", ["check-ignore", ".ariadne/runs", ".ariadne/tasks/example.yml", "ariadne.yml"], cwd);
   run(process.execPath, [cliPath, "doctor"], cwd);
   run(process.execPath, [cliPath, "run"], cwd);
-  const configPath = path.join(cwd, "ariadne.yml");
-  const config = await readFile(configPath, "utf8");
-  await writeFile(configPath, config.replace("    enabled: false", "    enabled: true"));
   const listResult = run(process.execPath, [cliPath, "list"], cwd);
+  const wideListResult = run(process.execPath, [cliPath, "list", "--wide"], cwd);
+  run(process.execPath, [cliPath, "list", "--csv"], cwd);
+  run(process.execPath, [cliPath, "list", "--md"], cwd);
+  run(process.execPath, [cliPath, "list", "--json"], cwd);
   run(process.execPath, [cliPath, "report"], cwd);
 
   const runPath = await latestRunJson(cwd);
   const runJson = JSON.parse(await readFile(runPath, "utf8"));
   const runCsv = await readFile(path.join(cwd, ".ariadne", "runs", "runs.csv"), "utf8");
+  const runMarkdown = await readFile(path.join(cwd, ".ariadne", "runs", "runs.md"), "utf8");
+  const runListJson = JSON.parse(await readFile(path.join(cwd, ".ariadne", "runs", "runs.json"), "utf8"));
 
   if (runJson.summary.total !== 1 || runJson.summary.failed !== 0) {
     throw new Error(`Expected passing smoke run, got ${JSON.stringify(runJson.summary)}`);
   }
-  if (!listResult.stdout.includes(".ariadne/runs/") || !listResult.stdout.includes("passed") || !listResult.stdout.includes("CSV written: .ariadne/runs/runs.csv")) {
-    throw new Error(`Expected list output to include passing run, got ${listResult.stdout}`);
+  if (!listResult.stdout.includes("Run ID") || !listResult.stdout.includes("example") || listResult.stdout.includes(".ariadne/runs/")) {
+    throw new Error(`Expected compact list output, got ${listResult.stdout}`);
   }
-  if (!runCsv.startsWith("Started,Status,Task,Duration,Path\n") || !runCsv.includes(",passed,")) {
+  if (!wideListResult.stdout.includes("Task Name") || !wideListResult.stdout.includes(".ariadne/runs/")) {
+    throw new Error(`Expected wide list output, got ${wideListResult.stdout}`);
+  }
+  if (!runCsv.startsWith("started_at,status,task_id,task_name,duration_ms,duration,path\n") || !runCsv.includes(",passed,")) {
     throw new Error(`Expected list CSV to include passing run, got ${runCsv}`);
+  }
+  if (!runMarkdown.startsWith("| started_at | status | task_id | task_name | duration_ms | duration | path |")) {
+    throw new Error(`Expected Markdown list export, got ${runMarkdown}`);
+  }
+  if (!Array.isArray(runListJson) || runListJson[0]?.task_id !== "example") {
+    throw new Error(`Expected JSON list export, got ${JSON.stringify(runListJson)}`);
   }
 
   console.log(`passing flow ok: ${cwd}`);

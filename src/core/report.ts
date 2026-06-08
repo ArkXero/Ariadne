@@ -144,7 +144,7 @@ export async function findLatestRunFile(cwd: string): Promise<string> {
   }
 
   const files = (await fs.readdir(runsDir))
-    .filter((file) => file.endsWith(".json"))
+    .filter((file) => file.endsWith(".json") && file !== "runs.json")
     .sort();
 
   if (files.length === 0) {

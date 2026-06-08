@@ -42,8 +42,12 @@ program
 program
   .command("list")
   .description("List all Ariadne runs in this project.")
-  .action(async () => {
-    await listCommand(process.cwd());
+  .option("--wide", "Show full task names and run paths.")
+  .option("--csv", "Write raw CSV export to .ariadne/runs/runs.csv.")
+  .option("--md", "Write Markdown table export to .ariadne/runs/runs.md.")
+  .option("--json", "Write JSON export to .ariadne/runs/runs.json.")
+  .action(async (options: { wide?: boolean; csv?: boolean; md?: boolean; json?: boolean }) => {
+    await listCommand(process.cwd(), options);
   });
 
 program

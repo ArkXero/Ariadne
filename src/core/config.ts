@@ -15,20 +15,6 @@ const ConfigSchema = z.object({
   }).default({
     directory: ".ariadne/tasks"
   }),
-  list: z.object({
-    csv: z.object({
-      enabled: z.boolean().default(false),
-      path: z.string().min(1).default(".ariadne/runs/runs.csv")
-    }).default({
-      enabled: false,
-      path: ".ariadne/runs/runs.csv"
-    })
-  }).default({
-    csv: {
-      enabled: false,
-      path: ".ariadne/runs/runs.csv"
-    }
-  }),
   verification: z.object({
     commands: z.array(z.string().min(1)).default([]),
     timeout_ms: z.number().int().positive().default(300_000)

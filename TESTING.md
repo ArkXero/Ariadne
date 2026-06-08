@@ -71,6 +71,10 @@ node "$PWD/dist/cli.js" init
 node "$PWD/dist/cli.js" doctor
 node "$PWD/dist/cli.js" run
 node "$PWD/dist/cli.js" list
+node "$PWD/dist/cli.js" list --wide
+node "$PWD/dist/cli.js" list --csv
+node "$PWD/dist/cli.js" list --md
+node "$PWD/dist/cli.js" list --json
 node "$PWD/dist/cli.js" report
 ```
 
@@ -82,8 +86,9 @@ Expected result:
 - `.ariadne/runs/latest-report.html` exists.
 - `.gitignore` contains `/.ariadne/` and `/ariadne.yml`.
 - `ariadne doctor` reports no errors.
-- `ariadne list` includes the generated run.
-- When `list.csv.enabled` is `true`, `ariadne list` writes configured CSV path.
+- `ariadne list` shows compact task and run IDs.
+- `ariadne list --wide` shows full task names and JSON paths.
+- CSV, Markdown, and JSON exports exist under `.ariadne/runs/`.
 - Terminal summary reports `failed: 0`.
 
 ## Failure smoke test

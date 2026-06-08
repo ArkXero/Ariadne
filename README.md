@@ -63,15 +63,15 @@ agent:
 
 `ariadne doctor` validates config and task files, checks command executables, and detects missing package manager scripts before a run.
 
-`ariadne list` prints every run in the project, newest first, with status, task, duration, and JSON path.
+`ariadne list` prints every run in the project, newest first, in a compact table with task IDs and short run IDs.
 
-To also generate a CSV snapshot when `ariadne list` runs, enable it in `ariadne.yml`:
+Use explicit output modes for full details and exports:
 
-```yaml
-list:
-  csv:
-    enabled: true
-    path: ".ariadne/runs/runs.csv"
+```sh
+ariadne list --wide  # Full task names and JSON paths
+ariadne list --csv   # Write .ariadne/runs/runs.csv
+ariadne list --md    # Write .ariadne/runs/runs.md
+ariadne list --json  # Write .ariadne/runs/runs.json
 ```
 
 `ariadne report` reads the latest run JSON, prints a terminal summary, and writes `.ariadne/runs/latest-report.html`.

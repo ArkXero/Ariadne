@@ -4,12 +4,23 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { execa } from "execa";
 import { afterEach, describe, expect, it } from "vitest";
 import { initCommand } from "../src/commands/init.js";
+import { listCommand } from "../src/commands/list.js";
 import { loadConfig } from "../src/core/config.js";
 import { diagnoseRepository, formatDoctorReport } from "../src/core/doctor.js";
 import { snapshotForbiddenFiles, diffForbiddenSnapshots } from "../src/core/forbidden-files.js";
 import { countDiffChangedLines, getChangedFiles, getGitDiff } from "../src/core/git.js";
-import { buildHtmlReport, formatRunCompletion, formatTerminalSummary } from "../src/core/report.js";
-import { formatRunCsv, formatRunList, listRuns, writeRunCsv } from "../src/core/runs.js";
+import { buildHtmlReport, findLatestRunFile, formatRunCompletion, formatTerminalSummary } from "../src/core/report.js";
+import {
+  formatCompactRunList,
+  formatRunCsv,
+  formatRunJson,
+  formatRunMarkdown,
+  formatWideRunList,
+  listRuns,
+  writeRunCsv,
+  writeRunJson,
+  writeRunMarkdown
+} from "../src/core/runs.js";
 import { runAriadne } from "../src/core/runner.js";
 import { scoreTaskRun } from "../src/core/scorer.js";
 import { loadTasks } from "../src/core/task-loader.js";
@@ -50,12 +61,6 @@ function config(overrides: Partial<AriadneConfig["checks"]> = {}): AriadneConfig
     },
     tasks: {
       directory: ".ariadne/tasks"
-    },
-    list: {
-      csv: {
-        enabled: false,
-        path: ".ariadne/runs/runs.csv"
-      }
     },
     verification: {
       commands: [],
@@ -116,12 +121,6 @@ describe("config loading", () => {
       tasks: {
         directory: ".ariadne/tasks"
       },
-      list: {
-        csv: {
-          enabled: false,
-          path: ".ariadne/runs/runs.csv"
-        }
-      },
       verification: {
         commands: [],
         timeout_ms: 300_000
@@ -142,6 +141,22 @@ describe("config loading", () => {
 
     await expect(loadConfig(cwd)).rejects.toThrow(/agent\.command is required/);
   });
+
+  it("ignores legacy list CSV config", async () => {
+    const cwd = await makeTempDir("ariadne-config-legacy-list-");
+    await writeFile(path.join(cwd, "ariadne.yml"), [
+      "agent:",
+      "  command: cat",
+      "list:",
+      "  csv:",
+      "    enabled: true",
+      "    path: custom.csv"
+    ].join("\n"));
+
+    const result = await loadConfig(cwd);
+
+    expect(result.config).not.toHaveProperty("list");
+  });
 });
 
 describe("init generation", () => {
@@ -154,10 +169,6 @@ describe("init generation", () => {
     const tasks = await loadTasks(cwd, loadedConfig.tasks.directory);
 
     expect(loadedConfig.verification.commands).toEqual([]);
-    expect(loadedConfig.list.csv).toEqual({
-      enabled: false,
-      path: ".ariadne/runs/runs.csv"
-    });
     expect(loadedConfig.checks.forbidden_files).toEqual([".env", ".env.*"]);
     expect(tasks).toHaveLength(1);
     expect(tasks[0]).toMatchObject({
@@ -459,6 +470,18 @@ describe("scorer", () => {
 });
 
 describe("report output", () => {
+  it("does not treat list JSON export as latest run", async () => {
+    const cwd = await makeTempDir("ariadne-report-latest-");
+    const runsDir = path.join(cwd, ".ariadne", "runs");
+    await mkdir(runsDir, { recursive: true });
+    await writeFile(path.join(runsDir, "2026-06-08T17-09-45-061Z.json"), "{}");
+    await writeFile(path.join(runsDir, "runs.json"), "[]");
+
+    await expect(findLatestRunFile(cwd)).resolves.toBe(
+      path.join(runsDir, "2026-06-08T17-09-45-061Z.json")
+    );
+  });
+
   it("formats run command output as sectioned agent verification and checks", () => {
     const taskResult = runResult({
       task: {
@@ -579,8 +602,7 @@ describe("report output", () => {
 });
 
 describe("run list", () => {
-  it("lists every run newest first with key details and relative paths", async () => {
-    const cwd = await makeTempDir("ariadne-list-");
+  async function makeRunList(cwd: string) {
     const runsDir = path.join(cwd, ".ariadne", "runs");
     await mkdir(runsDir, { recursive: true });
     const older: AriadneRun = {
@@ -609,7 +631,7 @@ describe("run list", () => {
           ...runResult({
             task: {
               id: "fix-auth-bug",
-              name: "fix-auth-bug",
+              name: "Fix authentication bug with long readable name",
               file: "/tmp/task.yml",
               prompt: "Fix auth."
             }
@@ -631,21 +653,43 @@ describe("run list", () => {
 
     await writeFile(path.join(runsDir, "older.json"), JSON.stringify(older));
     await writeFile(path.join(runsDir, "newer.json"), JSON.stringify(newer));
+    return listRuns(cwd);
+  }
 
-    const runs = await listRuns(cwd);
-    const output = formatRunList(runs);
+  it("formats compact output with task ids and short run ids", async () => {
+    const cwd = await makeTempDir("ariadne-list-compact-");
+    const runs = await makeRunList(cwd);
+    const output = formatCompactRunList(runs);
 
     expect(runs).toHaveLength(2);
     expect(runs[0]).toEqual({
+      startedAt: "2026-06-08T01:35:00.000Z",
       started: "2026-06-08 01:35",
       status: "passed",
-      task: "fix-auth-bug +1 more",
+      taskId: "fix-auth-bug +1 more",
+      taskName: "Fix authentication bug with long readable name +1 more",
+      durationMs: 134_000,
       duration: "2m 14s",
-      path: ".ariadne/runs/newer.json"
+      path: ".ariadne/runs/newer.json",
+      runId: "newer"
     });
-    expect(output.indexOf("newer.json")).toBeLessThan(output.indexOf("older.json"));
-    expect(output).toContain("Started           Status        Task                  Duration  Path");
+    expect(output.indexOf("newer")).toBeLessThan(output.indexOf("older"));
+    expect(output).toContain("Task ID");
+    expect(output).toContain("Run ID");
+    expect(output).toContain("fix-auth-bug +1 more");
+    expect(output).not.toContain("Fix authentication bug with long readable name");
+    expect(output).not.toContain(".ariadne/runs/newer.json");
     expect(output).toContain("2026-06-07 23:58  check_failed  none");
+  });
+
+  it("formats wide output with full task names and paths", async () => {
+    const cwd = await makeTempDir("ariadne-list-wide-");
+    const output = formatWideRunList(await makeRunList(cwd));
+
+    expect(output).toContain("Task Name");
+    expect(output).toContain("Fix authentication bug with long readable name +1 more");
+    expect(output).toContain(".ariadne/runs/newer.json");
+    expect(output.indexOf("newer.json")).toBeLessThan(output.indexOf("older.json"));
   });
 
   it("formats an empty runs directory with an actionable message", async () => {
@@ -653,24 +697,77 @@ describe("run list", () => {
     await mkdir(path.join(cwd, ".ariadne", "runs"), { recursive: true });
 
     await expect(listRuns(cwd)).resolves.toEqual([]);
-    expect(formatRunList([])).toContain("No runs found. Run \"ariadne run\" first.");
+    expect(formatCompactRunList([])).toContain("No runs found. Run \"ariadne run\" first.");
+    expect(formatWideRunList([])).toContain("No runs found. Run \"ariadne run\" first.");
   });
 
-  it("formats and writes CSV with escaped values", async () => {
-    const cwd = await makeTempDir("ariadne-list-csv-");
-    const runs = [{
+  function exportFixture() {
+    return [{
+      startedAt: "2026-06-08T01:35:00.000Z",
       started: "2026-06-08 01:35",
       status: "passed" as const,
-      task: "Fix auth, \"again\"",
+      taskId: "fix-auth",
+      taskName: "Fix auth, \"again\" | safely",
+      durationMs: 134_000,
       duration: "2m 14s",
-      path: ".ariadne/runs/newer.json"
+      path: ".ariadne/runs/newer.json",
+      runId: "newer"
     }];
+  }
 
-    const outputPath = await writeRunCsv(cwd, ".ariadne/runs/runs.csv", runs);
+  it("formats and writes raw CSV export", async () => {
+    const cwd = await makeTempDir("ariadne-list-csv-");
+    const runs = exportFixture();
+
+    const outputPath = await writeRunCsv(cwd, runs);
     const csv = await readFile(outputPath, "utf8");
 
     expect(csv).toBe(formatRunCsv(runs));
-    expect(csv).toContain('"Fix auth, ""again"""');
+    expect(csv.startsWith("started_at,status,task_id,task_name,duration_ms,duration,path\n")).toBe(true);
+    expect(csv).toContain("2026-06-08T01:35:00.000Z");
+    expect(csv).toContain("134000");
+    expect(csv).toContain('"Fix auth, ""again"" | safely"');
+    expect(csv).not.toContain("Ariadne runs");
+  });
+
+  it("formats and writes Markdown export", async () => {
+    const cwd = await makeTempDir("ariadne-list-md-");
+    const runs = exportFixture();
+
+    const outputPath = await writeRunMarkdown(cwd, runs);
+    const markdown = await readFile(outputPath, "utf8");
+
+    expect(markdown).toBe(formatRunMarkdown(runs));
+    expect(markdown).toContain("| started_at | status | task_id | task_name | duration_ms | duration | path |");
+    expect(markdown).toContain("Fix auth, \"again\" \\| safely");
+  });
+
+  it("formats and writes JSON export", async () => {
+    const cwd = await makeTempDir("ariadne-list-json-");
+    const runs = exportFixture();
+
+    const outputPath = await writeRunJson(cwd, runs);
+    const json = await readFile(outputPath, "utf8");
+    const parsed = JSON.parse(json);
+
+    expect(json).toBe(formatRunJson(runs));
+    expect(parsed).toEqual([{
+      started_at: "2026-06-08T01:35:00.000Z",
+      status: "passed",
+      task_id: "fix-auth",
+      task_name: "Fix auth, \"again\" | safely",
+      duration_ms: 134_000,
+      duration: "2m 14s",
+      path: ".ariadne/runs/newer.json"
+    }]);
+  });
+
+  it("rejects conflicting output modes", async () => {
+    const cwd = await makeTempDir("ariadne-list-conflict-");
+
+    await expect(listCommand(cwd, { csv: true, json: true })).rejects.toThrow(
+      "Choose only one output mode: --wide, --csv, --md, or --json."
+    );
   });
 });
 
