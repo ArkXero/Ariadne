@@ -4,7 +4,7 @@
   "description": "Local CLI for coding-agent reliability and testing evals.",
   "type": "module",
   "bin": {
-    "ariadne": "./dist/cli.js"
+    "ariadne": "dist/cli.js"
   },
   "files": [
     "dist",

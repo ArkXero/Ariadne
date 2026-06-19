@@ -144,3 +144,4 @@ vite.config.ts.timestamp-*
 
 # Ariadne run artifacts
 .ariadne/runs/
+.DS_Store
