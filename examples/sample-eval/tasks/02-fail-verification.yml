@@ -1,0 +1,6 @@
+id: 02-fail-verification
+name: Demonstrate verification failure
+metadata:
+  expected: verification_failed
+prompt: |
+  Create BROKEN.md without the required verification marker so the verifier fails.

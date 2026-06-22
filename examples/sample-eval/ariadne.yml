@@ -1,0 +1,21 @@
+version: 1
+
+agent:
+  command: "node agent.mjs"
+  timeout_ms: 600000
+
+tasks:
+  directory: "tasks"
+
+verification:
+  commands:
+    - "node verify.mjs"
+  timeout_ms: 300000
+
+checks:
+  forbidden_files:
+    - ".env"
+  max_changed_files: 20
+  max_diff_lines: 200
+  forbidden_commands:
+    - "rm -rf"

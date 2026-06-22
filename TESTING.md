@@ -51,6 +51,8 @@ pnpm smoke
 
 `pnpm smoke` uses an isolated temporary `PNPM_HOME` to verify `pnpm link --global` and the linked `ariadne --help` command without changing the host global pnpm installation. It also verifies direct help forms, the passing CLI flow, and forbidden ignored-file detection.
 
+`pnpm lint` is the TypeScript no-emit lint gate used by `pnpm check`.
+
 ## Manual developer-preview installation
 
 From a parent directory, verify the exact developer-preview installation flow:
@@ -170,6 +172,7 @@ git status --short
 - Report failure: inspect `.ariadne/runs/latest-report.html` in printed temp directory.
 - Unexpected changed-file failures: compare `trace.changedFiles`, `trace.workspaceDirtyBefore`, and `trace.diff`.
 - Forbidden file failures: compare `trace.forbiddenFileChanges` with `checks.forbidden_files`.
+- Forbidden command failures: compare score check `details.matches` with `trace.commandsObserved`.
 
 ## Current test coverage
 
@@ -177,7 +180,7 @@ Current MVP uses:
 
 - TypeScript compiler checks.
 - Build check.
-- Vitest unit tests for config loading, doctor diagnostics, task loading, scorer behavior, git helpers, and forbidden-file snapshots.
+- Vitest unit tests for config loading, doctor diagnostics, duplicate task validation, task loading, scorer behavior, run listing, reports, git helpers, and forbidden-file snapshots.
 - Smoke test for passing init/run/list/report.
 - Smoke test for forbidden ignored file failure.
 - Isolated global-link smoke test for `pnpm link --global` and linked `ariadne --help`.

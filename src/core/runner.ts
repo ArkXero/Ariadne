@@ -6,6 +6,7 @@ import { diffForbiddenSnapshots, snapshotForbiddenFiles } from "./forbidden-file
 import { countDiffChangedLines, getChangedFiles, getGitDiff, isGitRepository } from "./git.js";
 import { scoreTaskRun } from "./scorer.js";
 import { loadTasks } from "./task-loader.js";
+import { CURRENT_RUN_SCHEMA_VERSION } from "../schema/run-record.js";
 import type { AriadneRun, CommandExecution, TaskRunResult, TaskScoreStatus } from "../types/index.js";
 
 interface RunOptions {
@@ -106,6 +107,7 @@ async function runTask(input: {
   task: TaskRunResult["task"];
   gitAvailable: boolean;
 }): Promise<TaskRunResult> {
+  const startedAt = Date.now();
   const workspaceDirtyBefore = await getChangedFiles(input.cwd);
   const forbiddenFilesBefore = await snapshotForbiddenFiles(input.cwd, input.config.checks.forbidden_files);
   const agent = await runShellCommand({
@@ -151,6 +153,7 @@ async function runTask(input: {
 
   const partial: Omit<TaskRunResult, "score"> = {
     task: input.task,
+    durationMs: Date.now() - startedAt,
     agent,
     verification,
     trace: {
@@ -199,7 +202,8 @@ export async function runAriadne(options: RunOptions): Promise<AriadneRun & { ou
     status: summarizeRunStatus(results)
   };
   const run: AriadneRun = {
-    version: 1,
+    schemaVersion: CURRENT_RUN_SCHEMA_VERSION,
+    version: CURRENT_RUN_SCHEMA_VERSION,
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
     durationMs: completedAt.getTime() - startedAt.getTime(),

@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "fs-extra";
 import { parse } from "yaml";
 import { z } from "zod";
+import { assertUniqueTaskIds } from "./task-validation.js";
 import type { AriadneTask } from "../types/index.js";
 
 const TaskSchema = z.object({
@@ -42,7 +43,7 @@ export async function loadTasks(cwd: string, tasksDirectory: string): Promise<Ar
     throw new Error(`No task YAML files found in ${resolvedDirectory}.`);
   }
 
-  return Promise.all(files.map(async (filePath) => {
+  const tasks = await Promise.all(files.map(async (filePath) => {
     let rawTask: unknown;
     try {
       rawTask = parse(await fs.readFile(filePath, "utf8"));
@@ -65,4 +66,7 @@ export async function loadTasks(cwd: string, tasksDirectory: string): Promise<Ar
       file: filePath
     };
   }));
+
+  assertUniqueTaskIds(tasks);
+  return tasks;
 }

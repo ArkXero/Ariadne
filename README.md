@@ -48,6 +48,8 @@ pnpm check
 
 See [TESTING.md](./TESTING.md) for full setup, smoke tests, expected results, and failure-debugging notes.
 
+See [docs/agent-adapters.md](./docs/agent-adapters.md) for the agent stdin/environment contract and [docs/task-isolation.md](./docs/task-isolation.md) for the isolation roadmap.
+
 During development, use:
 
 ```sh
@@ -93,6 +95,20 @@ ariadne list --json  # Write .ariadne/runs/runs.json
 
 `ariadne report` reads the latest run JSON, prints a terminal summary, and writes `.ariadne/runs/latest-report.html`.
 
+## Examples
+
+Run the local sample suite:
+
+```sh
+pnpm build
+cd examples/sample-eval
+node ../../dist/cli.js doctor
+node ../../dist/cli.js run
+node ../../dist/cli.js report
+```
+
+The sample includes one passing task, one verification failure, one forbidden-file failure, and one forbidden-command scoring failure.
+
 ## MVP checks
 
 - Agent command must exit with code 0.
@@ -100,4 +116,4 @@ ariadne list --json  # Write .ariadne/runs/runs.json
 - Forbidden files must not be modified.
 - Changed files must not exceed `checks.max_changed_files`.
 - Diff lines must not exceed `checks.max_diff_lines`.
-- Forbidden command strings must not appear in logs or observed commands.
+- Forbidden command rules must not match observed command lines.

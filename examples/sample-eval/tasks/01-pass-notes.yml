@@ -1,0 +1,6 @@
+id: 01-pass-notes
+name: Add verified notes
+metadata:
+  expected: pass
+prompt: |
+  Create NOTES.md with the marker VERIFICATION_OK and a short note about this sample run.
