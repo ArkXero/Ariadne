@@ -297,6 +297,114 @@ describe("task loading", () => {
 
     await expect(loadTasks(cwd, ".ariadne/tasks")).rejects.toThrow(/prompt/);
   });
+
+  it("rejects duplicate task IDs in the same file", async () => {
+    const cwd = await makeTempDir("ariadne-tasks-duplicate-same-file-");
+    const tasksDir = path.join(cwd, "tasks");
+    await mkdir(tasksDir, { recursive: true });
+    await writeFile(path.join(tasksDir, "docs.yml"), [
+      "id: fix-readme",
+      "id: fix-readme",
+      "prompt: Fix README."
+    ].join("\n"));
+
+    await expect(loadTasks(cwd, "tasks")).rejects.toThrow([
+      '[ERROR] Duplicate task id "fix-readme"',
+      "Found in:",
+      "- tasks/docs.yml",
+      "- tasks/docs.yml"
+    ].join("\n"));
+  });
+
+  it("rejects duplicate task IDs in different files", async () => {
+    const cwd = await makeTempDir("ariadne-tasks-duplicate-files-");
+    const tasksDir = path.join(cwd, "tasks");
+    await mkdir(tasksDir, { recursive: true });
+    await writeFile(path.join(tasksDir, "docs.yml"), [
+      "id: fix-readme",
+      "prompt: Fix README."
+    ].join("\n"));
+    await writeFile(path.join(tasksDir, "more-docs.yml"), [
+      "id: fix-readme",
+      "prompt: Fix more docs."
+    ].join("\n"));
+
+    await expect(loadTasks(cwd, "tasks")).rejects.toThrow([
+      '[ERROR] Duplicate task id "fix-readme"',
+      "Found in:",
+      "- tasks/docs.yml",
+      "- tasks/more-docs.yml"
+    ].join("\n"));
+  });
+
+  it("rejects duplicate task IDs across nested directories", async () => {
+    const cwd = await makeTempDir("ariadne-tasks-duplicate-nested-");
+    const tasksDir = path.join(cwd, "tasks");
+    await mkdir(path.join(tasksDir, "nested"), { recursive: true });
+    await writeFile(path.join(tasksDir, "docs.yml"), [
+      "id: fix-readme",
+      "prompt: Fix README."
+    ].join("\n"));
+    await writeFile(path.join(tasksDir, "nested", "more-docs.yml"), [
+      "id: fix-readme",
+      "prompt: Fix nested docs."
+    ].join("\n"));
+
+    await expect(loadTasks(cwd, "tasks")).rejects.toThrow([
+      '[ERROR] Duplicate task id "fix-readme"',
+      "Found in:",
+      "- tasks/docs.yml",
+      "- tasks/nested/more-docs.yml"
+    ].join("\n"));
+  });
+
+  it("rejects duplicate task IDs when YAML is otherwise valid", async () => {
+    const cwd = await makeTempDir("ariadne-tasks-duplicate-valid-");
+    const tasksDir = path.join(cwd, "tasks");
+    await mkdir(tasksDir, { recursive: true });
+    await writeFile(path.join(tasksDir, "docs.yml"), [
+      "id: fix-readme",
+      "name: Fix README",
+      "prompt: Fix README.",
+      "metadata:",
+      "  area: docs"
+    ].join("\n"));
+    await writeFile(path.join(tasksDir, "more-docs.yml"), [
+      "id: fix-readme",
+      "name: Fix more docs",
+      "prompt: Fix more docs.",
+      "metadata:",
+      "  area: docs"
+    ].join("\n"));
+
+    await expect(loadTasks(cwd, "tasks")).rejects.toThrow([
+      '[ERROR] Duplicate task id "fix-readme"',
+      "Found in:",
+      "- tasks/docs.yml",
+      "- tasks/more-docs.yml"
+    ].join("\n"));
+  });
+
+  it("reports duplicate task IDs when another duplicate task has invalid fields", async () => {
+    const cwd = await makeTempDir("ariadne-tasks-duplicate-invalid-");
+    const tasksDir = path.join(cwd, "tasks");
+    await mkdir(tasksDir, { recursive: true });
+    await writeFile(path.join(tasksDir, "docs.yml"), [
+      "id: fix-readme",
+      "prompt: Fix README."
+    ].join("\n"));
+    await writeFile(path.join(tasksDir, "more-docs.yml"), [
+      "id: fix-readme",
+      "name: Missing prompt"
+    ].join("\n"));
+
+    await expect(loadTasks(cwd, "tasks")).rejects.toThrow([
+      '[ERROR] Duplicate task id "fix-readme"',
+      "Found in:",
+      "- tasks/docs.yml",
+      "- tasks/more-docs.yml"
+    ].join("\n"));
+  });
 });
 
 describe("scorer", () => {
