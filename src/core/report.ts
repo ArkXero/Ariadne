@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "fs-extra";
+import { getRunSchemaVersion } from "../schema/run-record.js";
 import type { AriadneRun, CommandExecution, ScoreCheck, TaskRunResult, TaskScoreStatus } from "../types/index.js";
 
 const LOG_TAIL_LINES = 8;
@@ -30,7 +31,8 @@ function passFailLabel(passed: boolean): string {
 }
 
 function runStatus(run: AriadneRun): TaskScoreStatus {
-  return run.summary.status ?? (run.summary.failed > 0 ? "check_failed" : "passed");
+  const failed = run.summary?.failed ?? runResults(run).filter((result) => !result.score?.passed).length;
+  return run.summary?.status ?? (failed > 0 ? "check_failed" : "passed");
 }
 
 function formatCheck(check: ScoreCheck): string {
@@ -68,7 +70,7 @@ function commandStatus(command: CommandExecution): string {
 }
 
 function failedVerificationCommands(result: TaskRunResult): CommandExecution[] {
-  return result.verification.filter((command) => !commandPassed(command));
+  return (result.verification ?? []).filter((command) => !commandPassed(command));
 }
 
 function formatDuration(durationMs: number): string {
@@ -136,6 +138,43 @@ function runIdForDisplay(run: AriadneRun & { outputPath?: string }): string {
   return path.basename(run.outputPath, ".json");
 }
 
+function resultDurationMs(result: TaskRunResult): number {
+  return result.durationMs
+    ?? result.agent.runtimeMs + (result.verification ?? []).reduce((total, command) => total + command.runtimeMs, 0);
+}
+
+function changedFiles(result: TaskRunResult): string[] {
+  return result.trace?.changedFiles ?? [];
+}
+
+function forbiddenFileChanges(result: TaskRunResult): string[] {
+  return result.trace?.forbiddenFileChanges ?? [];
+}
+
+function diffLineCount(result: TaskRunResult): number {
+  return result.trace?.diffLineCount ?? 0;
+}
+
+function commandsObserved(result: TaskRunResult): string[] {
+  return result.trace?.commandsObserved ?? [];
+}
+
+function runResults(run: AriadneRun): TaskRunResult[] {
+  return run.results ?? [];
+}
+
+function summaryTotal(run: AriadneRun): number {
+  return run.summary?.total ?? runResults(run).length;
+}
+
+function summaryPassed(run: AriadneRun): number {
+  return run.summary?.passed ?? runResults(run).filter((result) => result.score?.passed).length;
+}
+
+function summaryFailed(run: AriadneRun): number {
+  return run.summary?.failed ?? runResults(run).filter((result) => !result.score?.passed).length;
+}
+
 export async function findLatestRunFile(cwd: string): Promise<string> {
   const runsDir = path.join(cwd, ".ariadne", "runs");
 
@@ -169,8 +208,8 @@ export function formatRunCompletion(run: AriadneRun & { outputPath?: string }): 
   ];
   const reportPath = reportPathForDisplay(run);
 
-  for (const result of run.results) {
-    const verificationRows = result.verification.map((command) => [
+  for (const result of runResults(run)) {
+    const verificationRows = (result.verification ?? []).map((command) => [
       command.command,
       commandStatus(command)
     ] satisfies [string, string]);
@@ -195,6 +234,7 @@ export function formatRunCompletion(run: AriadneRun & { outputPath?: string }): 
       `Task: ${result.task.name}`,
       `Run: ${runIdForDisplay(run)}`,
       `Duration: ${formatDuration(run.durationMs)}`,
+      `Task duration: ${formatDuration(resultDurationMs(result))}`,
       "",
       "Agent",
       `  command: ${result.agent.command}`,
@@ -232,11 +272,11 @@ export function formatRunCompletion(run: AriadneRun & { outputPath?: string }): 
     lines.push(
       "",
       `Result: ${scoreStatus(result)}`,
-      ...(reportPath && run.results.length === 1 ? [`Report: ${reportPath}`] : [])
+      ...(reportPath && runResults(run).length === 1 ? [`Report: ${reportPath}`] : [])
     );
   }
 
-  if (run.results.length !== 1) {
+  if (runResults(run).length !== 1) {
     lines.push("", `Run result: ${runStatus(run)}`);
     if (reportPath) {
       lines.push(`Run report: ${reportPath}`);
@@ -247,20 +287,23 @@ export function formatRunCompletion(run: AriadneRun & { outputPath?: string }): 
 }
 
 export function formatTerminalSummary(run: AriadneRun): string {
+  const results = runResults(run);
   const lines = [
     `Ariadne run: ${run.startedAt}`,
     `Status: ${runStatus(run)}`,
     `Duration: ${run.durationMs}ms`,
-    `Tasks: ${run.summary.total}, passed: ${run.summary.passed}, failed: ${run.summary.failed}`,
+    `Tasks: ${summaryTotal(run)}, passed: ${summaryPassed(run)}, failed: ${summaryFailed(run)}`,
+    `Run schema: ${getRunSchemaVersion(run)}`,
     ""
   ];
 
-  for (const result of run.results) {
+  for (const result of results) {
     const failedVerification = failedVerificationCommands(result);
 
     lines.push(`${statusLabel(scoreStatus(result))} ${result.task.id} - ${result.task.name}`);
     lines.push(`  Agent: ${commandStatus(result.agent)} (exit ${result.agent.exitCode}, runtime ${result.agent.runtimeMs}ms)`);
-    lines.push(`  Verification: ${passFailLabel(failedVerification.length === 0)} (${result.verification.length} commands)`);
+    lines.push(`  Duration: ${formatDuration(resultDurationMs(result))}`);
+    lines.push(`  Verification: ${passFailLabel(failedVerification.length === 0)} (${(result.verification ?? []).length} commands)`);
     for (const command of failedVerification) {
       lines.push(`  Failed command: ${command.command}`);
       lines.push(`  Exit code: ${command.exitCode}`);
@@ -268,9 +311,9 @@ export function formatTerminalSummary(run: AriadneRun): string {
       lines.push(...formatOutputTail("Stdout", command.stdout));
       lines.push(...formatOutputTail("Stderr", command.stderr));
     }
-    lines.push(`  Changed files: ${result.trace.changedFiles.length}, diff lines: ${result.trace.diffLineCount}`);
-    if (result.trace.forbiddenFileChanges.length > 0) {
-      lines.push(`  Forbidden file changes: ${result.trace.forbiddenFileChanges.join(", ")}`);
+    lines.push(`  Changed files: ${changedFiles(result).length}, diff lines: ${diffLineCount(result)}`);
+    if (forbiddenFileChanges(result).length > 0) {
+      lines.push(`  Forbidden file changes: ${forbiddenFileChanges(result).join(", ")}`);
     }
 
     const failedChecks = result.score.checks.filter((check) => !check.passed);
@@ -335,21 +378,23 @@ function renderTask(result: TaskRunResult): string {
   </header>
   <div class="grid">
     <div><strong>Agent</strong><span>${escapeHtml(commandStatus(result.agent))}</span></div>
+    <div><strong>Task duration</strong><span>${escapeHtml(formatDuration(resultDurationMs(result)))}</span></div>
     <div><strong>Agent exit</strong><span>${escapeHtml(result.agent.exitCode)}</span></div>
     <div><strong>Agent runtime</strong><span>${escapeHtml(result.agent.runtimeMs)}ms</span></div>
     <div><strong>Verification</strong><span>${escapeHtml(passFailLabel(failedVerification.length === 0))}</span></div>
-    <div><strong>Changed files</strong><span>${escapeHtml(result.trace.changedFiles.length)}</span></div>
-    <div><strong>Diff lines</strong><span>${escapeHtml(result.trace.diffLineCount)}</span></div>
+    <div><strong>Verification commands</strong><span>${escapeHtml((result.verification ?? []).length)}</span></div>
+    <div><strong>Changed files</strong><span>${escapeHtml(changedFiles(result).length)}</span></div>
+    <div><strong>Diff lines</strong><span>${escapeHtml(diffLineCount(result))}</span></div>
   </div>
   ${renderVerificationFailures(result)}
   <h3>Checks</h3>
   <ul>${renderChecks(result.score.checks)}</ul>
   <h3>Changed files</h3>
-  <pre>${escapeHtml(result.trace.changedFiles.join("\n") || "None")}</pre>
+  <pre>${escapeHtml(changedFiles(result).join("\n") || "None")}</pre>
   <h3>Forbidden file changes</h3>
-  <pre>${escapeHtml(result.trace.forbiddenFileChanges.join("\n") || "None")}</pre>
+  <pre>${escapeHtml(forbiddenFileChanges(result).join("\n") || "None")}</pre>
   <h3>Commands observed</h3>
-  <pre>${escapeHtml(result.trace.commandsObserved.join("\n") || "None")}</pre>
+  <pre>${escapeHtml(commandsObserved(result).join("\n") || "None")}</pre>
   <details>
     <summary>Agent stdout</summary>
     <pre>${escapeHtml(result.agent.stdout || "")}</pre>
@@ -360,12 +405,13 @@ function renderTask(result: TaskRunResult): string {
   </details>
   <details>
     <summary>Git diff</summary>
-    <pre>${escapeHtml(result.trace.diff || "")}</pre>
+    <pre>${escapeHtml(result.trace?.diff || "")}</pre>
   </details>
 </section>`;
 }
 
 export function buildHtmlReport(run: AriadneRun): string {
+  const results = runResults(run);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -507,14 +553,15 @@ export function buildHtmlReport(run: AriadneRun): string {
       <h1>Ariadne Reliability Report</h1>
       <p>Run started ${escapeHtml(run.startedAt)} from ${escapeHtml(run.cwd)}</p>
       <div class="summary">
-        <div><strong>Tasks</strong><span>${escapeHtml(run.summary.total)}</span></div>
-        <div><strong>Status</strong><span>${escapeHtml(run.summary.status ?? (run.summary.failed > 0 ? "check_failed" : "passed"))}</span></div>
-        <div><strong>Passed</strong><span>${escapeHtml(run.summary.passed)}</span></div>
-        <div><strong>Failed</strong><span>${escapeHtml(run.summary.failed)}</span></div>
-        <div><strong>Duration</strong><span>${escapeHtml(run.durationMs)}ms</span></div>
+        <div><strong>Tasks</strong><span>${escapeHtml(summaryTotal(run))}</span></div>
+        <div><strong>Status</strong><span>${escapeHtml(runStatus(run))}</span></div>
+        <div><strong>Passed</strong><span>${escapeHtml(summaryPassed(run))}</span></div>
+        <div><strong>Failed</strong><span>${escapeHtml(summaryFailed(run))}</span></div>
+        <div><strong>Duration</strong><span>${escapeHtml(formatDuration(run.durationMs))}</span></div>
+        <div><strong>Run schema</strong><span>${escapeHtml(getRunSchemaVersion(run))}</span></div>
       </div>
     </header>
-    ${run.results.map((result) => renderTask(result)).join("\n")}
+    ${results.map((result) => renderTask(result)).join("\n")}
   </main>
 </body>
 </html>`;

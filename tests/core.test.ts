@@ -10,6 +10,11 @@ import { diagnoseRepository, formatDoctorReport } from "../src/core/doctor.js";
 import { snapshotForbiddenFiles, diffForbiddenSnapshots } from "../src/core/forbidden-files.js";
 import { countDiffChangedLines, getChangedFiles, getGitDiff } from "../src/core/git.js";
 import { buildHtmlReport, findLatestRunFile, formatRunCompletion, formatTerminalSummary } from "../src/core/report.js";
+import { CURRENT_TRACE_SCHEMA_VERSION } from "../src/core/trace-schema.js";
+import { CURRENT_RUN_SCHEMA_VERSION, RunRecordSchema } from "../src/schema/run-record.js";
+import { CURRENT_RUN_SCHEMA_VERSION as CURRENT_REPORT_SCHEMA_VERSION, ReportSchema } from "../src/schema/report.js";
+import { CURRENT_RUN_SCHEMA_VERSION as CURRENT_TASK_RESULT_SCHEMA_VERSION, TaskRunResultSchema } from "../src/schema/task-result.js";
+import { CURRENT_RUN_SCHEMA_VERSION as CURRENT_TRACE_FILE_SCHEMA_VERSION, TraceSchema } from "../src/schema/trace.js";
 import {
   formatCompactRunList,
   formatRunCsv,
@@ -99,6 +104,69 @@ function runResult(overrides: Partial<Omit<TaskRunResult, "score">> = {}): Omit<
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+describe("run schemas", () => {
+  it("exports current schema versions and validates current run records", () => {
+    const baseResult = runResult();
+    const scoredResult: TaskRunResult = {
+      ...baseResult,
+      score: scoreTaskRun(baseResult, config())
+    };
+    const run: AriadneRun = {
+      schemaVersion: CURRENT_RUN_SCHEMA_VERSION,
+      version: CURRENT_RUN_SCHEMA_VERSION,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:00.010Z",
+      durationMs: 10,
+      cwd: "/tmp/ariadne",
+      configPath: "/tmp/ariadne/ariadne.yml",
+      config: config(),
+      results: [scoredResult],
+      summary: {
+        total: 1,
+        passed: 1,
+        failed: 0,
+        status: "passed"
+      }
+    };
+    const report = {
+      run,
+      generatedAt: "2026-01-01T00:00:00.020Z",
+      outputPath: "/tmp/ariadne/.ariadne/runs/latest-report.html"
+    };
+
+    expect(CURRENT_TRACE_FILE_SCHEMA_VERSION).toBe(CURRENT_RUN_SCHEMA_VERSION);
+    expect(CURRENT_TASK_RESULT_SCHEMA_VERSION).toBe(CURRENT_RUN_SCHEMA_VERSION);
+    expect(CURRENT_REPORT_SCHEMA_VERSION).toBe(CURRENT_RUN_SCHEMA_VERSION);
+    expect(TraceSchema.parse(scoredResult.trace)).toEqual(scoredResult.trace);
+    expect(TaskRunResultSchema.parse(scoredResult)).toEqual(scoredResult);
+    expect(RunRecordSchema.parse(run)).toEqual(run);
+    expect(ReportSchema.parse(report)).toEqual(report);
+  });
+
+  it("rejects unknown fields in run records", () => {
+    const run = {
+      schemaVersion: CURRENT_RUN_SCHEMA_VERSION,
+      version: CURRENT_RUN_SCHEMA_VERSION,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:00.010Z",
+      durationMs: 10,
+      cwd: "/tmp/ariadne",
+      configPath: "/tmp/ariadne/ariadne.yml",
+      config: config(),
+      results: [],
+      summary: {
+        total: 0,
+        passed: 0,
+        failed: 0,
+        status: "passed"
+      },
+      migration: "not-yet"
+    };
+
+    expect(() => RunRecordSchema.parse(run)).toThrow();
+  });
 });
 
 describe("config loading", () => {
@@ -252,6 +320,31 @@ describe("doctor", () => {
     expect(report.errors).toBe(1);
     expect(output).toContain('ERROR verification 1 script: pnpm script "typecheck" is missing from package.json.');
     expect(output).toContain('Suggestion: Add "typecheck" to package.json scripts, or update command "pnpm typecheck".');
+  });
+
+  it("reports duplicate task ids as task validation errors", async () => {
+    const cwd = await makeTempDir("ariadne-doctor-duplicate-tasks-");
+    await mkdir(path.join(cwd, ".ariadne", "tasks"), { recursive: true });
+    await writeFile(path.join(cwd, "ariadne.yml"), [
+      "agent:",
+      "  command: node agent.mjs"
+    ].join("\n"));
+    await writeFile(path.join(cwd, ".ariadne", "tasks", "one.yml"), [
+      "id: duplicate",
+      "prompt: One"
+    ].join("\n"));
+    await writeFile(path.join(cwd, ".ariadne", "tasks", "two.yml"), [
+      "id: duplicate",
+      "prompt: Two"
+    ].join("\n"));
+
+    const report = await diagnoseRepository(cwd);
+    const output = formatDoctorReport(report);
+
+    expect(report.passed).toBe(false);
+    expect(output).toContain('ERROR tasks: [ERROR] Duplicate task id "duplicate"');
+    expect(output).toContain("- .ariadne/tasks/one.yml");
+    expect(output).toContain("- .ariadne/tasks/two.yml");
   });
 });
 
@@ -478,6 +571,68 @@ describe("scorer", () => {
       "max_diff_lines",
       "forbidden_commands"
     ]);
+    expect(score.checks.find((check) => check.name === "forbidden_commands")?.details).toEqual({
+      matches: [
+        {
+          rule: "rm -rf",
+          command: "rm -rf dist"
+        }
+      ]
+    });
+  });
+
+  it("does not fail forbidden command checks for harmless substrings", () => {
+    const score = scoreTaskRun(
+      runResult({
+        trace: {
+          gitAvailable: true,
+          workspaceDirtyBefore: [],
+          changedFiles: [],
+          forbiddenFileChanges: [],
+          diff: "",
+          diffLineCount: 0,
+          commandsObserved: ["echo warm-rm -rf-note", "node scripts/remove-rf-cache.mjs"]
+        }
+      }),
+      config({
+        forbidden_commands: ["rm -rf"]
+      })
+    );
+
+    expect(score.passed).toBe(true);
+    expect(score.checks.find((check) => check.name === "forbidden_commands")).toMatchObject({
+      passed: true,
+      message: "No forbidden command rules matched observed commands."
+    });
+  });
+
+  it("matches forbidden command rules against command starts with env prefixes", () => {
+    const score = scoreTaskRun(
+      runResult({
+        trace: {
+          gitAvailable: true,
+          workspaceDirtyBefore: [],
+          changedFiles: [],
+          forbiddenFileChanges: [],
+          diff: "",
+          diffLineCount: 0,
+          commandsObserved: ["NODE_ENV=test env DRY_RUN=0 rm -rf dist", "git status --short"]
+        }
+      }),
+      config({
+        forbidden_commands: ["rm -rf", "git push"]
+      })
+    );
+
+    expect(score.passed).toBe(false);
+    expect(score.checks.find((check) => check.name === "forbidden_commands")?.details).toEqual({
+      matches: [
+        {
+          rule: "rm -rf",
+          command: "NODE_ENV=test env DRY_RUN=0 rm -rf dist"
+        }
+      ]
+    });
   });
 
   it("labels passing agent plus failing verification as verification_failed", () => {
@@ -622,6 +777,7 @@ describe("report output", () => {
       )
     };
     const run: AriadneRun & { outputPath: string } = {
+      schemaVersion: CURRENT_RUN_SCHEMA_VERSION,
       version: 1,
       startedAt: "2026-06-05T19:14:51.000Z",
       completedAt: "2026-06-05T19:16:32.000Z",
@@ -675,6 +831,7 @@ describe("report output", () => {
       score: scoreTaskRun(taskResult, config())
     };
     const run: AriadneRun = {
+      schemaVersion: CURRENT_RUN_SCHEMA_VERSION,
       version: 1,
       startedAt: "2026-01-01T00:00:00.000Z",
       completedAt: "2026-01-01T00:00:00.010Z",
@@ -707,6 +864,55 @@ describe("report output", () => {
     expect(htmlReport).toContain("Exit code: 127");
     expect(htmlReport).toContain("Reason: sh: pnpm: command not found");
   });
+
+  it("escapes task and command content in HTML reports", () => {
+    const taskResult = runResult({
+      task: {
+        id: "<script>alert(1)</script>",
+        name: "Task & report safety",
+        file: "/tmp/task.yml",
+        prompt: "Do work."
+      },
+      agent: command({ stdout: "<b>agent</b>\n" }),
+      trace: {
+        gitAvailable: true,
+        workspaceDirtyBefore: [],
+        changedFiles: ["src/<unsafe>.ts"],
+        forbiddenFileChanges: [],
+        diff: "+<script>bad()</script>",
+        diffLineCount: 1,
+        commandsObserved: ["echo '<unsafe>'"]
+      }
+    });
+    const run: AriadneRun = {
+      schemaVersion: CURRENT_RUN_SCHEMA_VERSION,
+      version: 1,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:00.010Z",
+      durationMs: 10,
+      cwd: "/tmp/<ariadne>",
+      configPath: "/tmp/ariadne/ariadne.yml",
+      config: config(),
+      results: [{
+        ...taskResult,
+        score: scoreTaskRun(taskResult, config())
+      }],
+      summary: {
+        total: 1,
+        passed: 1,
+        failed: 0,
+        status: "passed"
+      }
+    };
+
+    const htmlReport = buildHtmlReport(run);
+
+    expect(htmlReport).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(htmlReport).toContain("Task &amp; report safety");
+    expect(htmlReport).toContain("src/&lt;unsafe&gt;.ts");
+    expect(htmlReport).not.toContain("<script>alert(1)</script>");
+    expect(htmlReport).not.toContain("<script>bad()</script>");
+  });
 });
 
 describe("run list", () => {
@@ -714,6 +920,7 @@ describe("run list", () => {
     const runsDir = path.join(cwd, ".ariadne", "runs");
     await mkdir(runsDir, { recursive: true });
     const older: AriadneRun = {
+      schemaVersion: CURRENT_RUN_SCHEMA_VERSION,
       version: 1,
       startedAt: "2026-06-07T23:58:00.000Z",
       completedAt: "2026-06-07T23:58:43.000Z",
@@ -809,6 +1016,38 @@ describe("run list", () => {
     expect(formatWideRunList([])).toContain("No runs found. Run \"ariadne run\" first.");
   });
 
+  it("sorts stable ties by run path and tolerates older missing fields", async () => {
+    const cwd = await makeTempDir("ariadne-list-legacy-");
+    const runsDir = path.join(cwd, ".ariadne", "runs");
+    await mkdir(runsDir, { recursive: true });
+    const legacyRun = {
+      version: 1,
+      startedAt: "2026-06-08T01:35:00.000Z",
+      completedAt: "2026-06-08T01:35:00.000Z",
+      cwd,
+      configPath: path.join(cwd, "ariadne.yml"),
+      config: config(),
+      results: []
+    };
+
+    await writeFile(path.join(runsDir, "a.json"), JSON.stringify(legacyRun));
+    await writeFile(path.join(runsDir, "b.json"), JSON.stringify(legacyRun));
+
+    const runs = await listRuns(cwd);
+
+    expect(runs.map((run) => run.path)).toEqual([
+      ".ariadne/runs/b.json",
+      ".ariadne/runs/a.json"
+    ]);
+    expect(runs[0]).toMatchObject({
+      status: "passed",
+      durationMs: 0,
+      duration: "0ms",
+      taskId: "none",
+      taskName: "none"
+    });
+  });
+
   function exportFixture() {
     return [{
       startedAt: "2026-06-08T01:35:00.000Z",
@@ -880,6 +1119,25 @@ describe("run list", () => {
 });
 
 describe("run JSON", () => {
+  it("refuses to run ambiguous duplicate task ids", async () => {
+    const cwd = await makeTempDir("ariadne-run-duplicate-tasks-");
+    await mkdir(path.join(cwd, ".ariadne", "tasks"), { recursive: true });
+    await writeFile(path.join(cwd, "ariadne.yml"), [
+      "agent:",
+      "  command: node -e \"process.exit(1)\""
+    ].join("\n"));
+    await writeFile(path.join(cwd, ".ariadne", "tasks", "one.yml"), [
+      "id: duplicate",
+      "prompt: One"
+    ].join("\n"));
+    await writeFile(path.join(cwd, ".ariadne", "tasks", "two.yml"), [
+      "id: duplicate",
+      "prompt: Two"
+    ].join("\n"));
+
+    await expect(runAriadne({ cwd })).rejects.toThrow(/Duplicate task id "duplicate"/);
+  });
+
   it("writes structured agent, verification, and check results", async () => {
     const cwd = await makeTempDir("ariadne-run-json-");
     await mkdir(path.join(cwd, ".ariadne", "tasks"), { recursive: true });
@@ -901,6 +1159,8 @@ describe("run JSON", () => {
     const run = await runAriadne({ cwd });
     const writtenRun = JSON.parse(await readFile(run.outputPath, "utf8")) as AriadneRun;
 
+    expect(writtenRun.schemaVersion).toBe(CURRENT_TRACE_SCHEMA_VERSION);
+    expect(writtenRun.results[0].durationMs).toEqual(expect.any(Number));
     expect(writtenRun.summary.status).toBe("passed");
     expect(writtenRun.results[0].score).toMatchObject({
       passed: true,

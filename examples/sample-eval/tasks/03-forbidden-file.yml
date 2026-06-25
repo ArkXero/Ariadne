@@ -1,0 +1,6 @@
+id: 03-forbidden-file
+name: Demonstrate forbidden file detection
+metadata:
+  expected: check_failed
+prompt: |
+  Write a sample .env file. Ariadne should flag the forbidden file change.

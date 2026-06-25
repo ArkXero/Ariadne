@@ -63,6 +63,7 @@ export interface VerificationScore {
 
 export interface TaskRunResult {
   task: AriadneTask;
+  durationMs?: number;
   agent: CommandExecution;
   verification: CommandExecution[];
   trace: {
@@ -84,6 +85,7 @@ export interface TaskRunResult {
 }
 
 export interface AriadneRun {
+  schemaVersion: number;
   version: number;
   startedAt: string;
   completedAt: string;

@@ -15,11 +15,12 @@ export interface RunListEntry {
 }
 
 function runStatus(run: AriadneRun): TaskScoreStatus {
-  return run.summary.status ?? (run.summary.failed > 0 ? "check_failed" : "passed");
+  const failed = run.summary?.failed ?? (run.results ?? []).filter((result) => !result.score?.passed).length;
+  return run.summary?.status ?? (failed > 0 ? "check_failed" : "passed");
 }
 
 function formatStarted(startedAt: string): string {
-  return startedAt.slice(0, 16).replace("T", " ");
+  return startedAt ? startedAt.slice(0, 16).replace("T", " ") : "unknown";
 }
 
 function formatDuration(durationMs: number): string {
@@ -95,15 +96,18 @@ export async function listRuns(cwd: string): Promise<RunListEntry[]> {
   }));
 
   return runs
-    .sort((left, right) => right.run.startedAt.localeCompare(left.run.startedAt))
+    .sort((left, right) => {
+      const startedOrder = (right.run.startedAt ?? "").localeCompare(left.run.startedAt ?? "");
+      return startedOrder === 0 ? right.path.localeCompare(left.path) : startedOrder;
+    })
     .map(({ run, path: runPath }) => ({
-      startedAt: run.startedAt,
-      started: formatStarted(run.startedAt),
+      startedAt: run.startedAt ?? "",
+      started: formatStarted(run.startedAt ?? ""),
       status: runStatus(run),
-      taskId: formatTasks(run.results.map((result) => result.task.id)),
-      taskName: formatTasks(run.results.map((result) => result.task.name)),
-      durationMs: run.durationMs,
-      duration: formatDuration(run.durationMs),
+      taskId: formatTasks((run.results ?? []).map((result) => result.task.id)),
+      taskName: formatTasks((run.results ?? []).map((result) => result.task.name)),
+      durationMs: run.durationMs ?? 0,
+      duration: formatDuration(run.durationMs ?? 0),
       path: runPath,
       runId: path.basename(runPath, ".json")
     }));

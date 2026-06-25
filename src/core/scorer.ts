@@ -1,4 +1,5 @@
 import { matchesFilePattern } from "./path-match.js";
+import { findForbiddenCommandMatches } from "./forbidden-commands.js";
 import type { AriadneConfig, CommandExecution, CommandScore, ScoreCheck, TaskRunResult, TaskScoreStatus } from "../types/index.js";
 
 function failedCheck(name: string, message: string, details?: Record<string, unknown>): ScoreCheck {
@@ -92,25 +93,21 @@ export function scoreTaskRun(result: Omit<TaskRunResult, "score">, config: Ariad
     );
   }
 
-  const logs = [
+  const observedCommands = [
     result.agent.command,
-    result.agent.stdout,
-    result.agent.stderr,
     ...result.verification.flatMap((commandResult) => [
       commandResult.command,
-      commandResult.stdout,
-      commandResult.stderr
     ]),
     ...result.trace.commandsObserved
-  ].join("\n");
-  const forbiddenCommands = config.checks.forbidden_commands.filter((command) => logs.includes(command));
+  ];
+  const forbiddenCommandMatches = findForbiddenCommandMatches(config.checks.forbidden_commands, observedCommands);
   checks.push(
-    forbiddenCommands.length === 0
-      ? passedCheck("forbidden_commands", "No forbidden command strings were observed.", {
-        patterns: config.checks.forbidden_commands
+    forbiddenCommandMatches.length === 0
+      ? passedCheck("forbidden_commands", "No forbidden command rules matched observed commands.", {
+        rules: config.checks.forbidden_commands
       })
-      : failedCheck("forbidden_commands", "Forbidden command strings appeared in logs or observed commands.", {
-        commands: forbiddenCommands
+      : failedCheck("forbidden_commands", "Forbidden command rules matched observed commands.", {
+        matches: forbiddenCommandMatches
       })
   );
 
