@@ -1,568 +1,292 @@
 import path from "node:path";
-import fs from "fs-extra";
-import { getRunSchemaVersion } from "../schema/run-record.js";
-import type { AriadneRun, CommandExecution, ScoreCheck, TaskRunResult, TaskScoreStatus } from "../types/index.js";
+import { findLatestRunFile as latestRunFile, loadRunFile } from "./run-reader.js";
+import type {
+  AnyRunRecord,
+  ChangeEvidence,
+  LegacyRunRecord,
+  LegacyTaskRunResult,
+  PolicyResult,
+  ProcessCleanupResult,
+  ProcessResult,
+  RepositoryEntry,
+  RunRecord,
+  TaskOutcome
+} from "../types/index.js";
 
-const LOG_TAIL_LINES = 8;
-
-function escapeHtml(value: unknown): string {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+export interface ProcessView {
+  command: string;
+  status: string;
+  exitCode: number | null;
+  signal: string | null;
+  durationMs: number;
+  stdoutPreview: string;
+  stderrPreview: string;
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  stdoutHadDecodingReplacement?: boolean;
+  stderrHadDecodingReplacement?: boolean;
+  spawnError?: string;
+  cleanup?: ProcessCleanupResult;
+  stdoutArtifact?: string;
+  stderrArtifact?: string;
 }
 
-function checkStatusLabel(passed: boolean): string {
-  return passed ? "PASS" : "FAIL";
+export interface TaskReportView {
+  id: string;
+  name: string;
+  status: string;
+  outcome: string;
+  durationMs: number;
+  agent?: ProcessView;
+  verification: ProcessView[];
+  changedFiles: string[];
+  preexistingFiles: string[];
+  changes: ChangeEvidence[];
+  preexistingEntries: RepositoryEntry[];
+  diffLineCount: number;
+  policies: PolicyResult[];
+  score: number;
+  failures: string[];
+  lifecycle: Array<{ stage: string; at: string; detail?: string }>;
+  diffArtifact?: string;
 }
 
-function scoreStatus(result: TaskRunResult): TaskScoreStatus {
-  return result.score.status ?? (result.score.passed ? "passed" : "check_failed");
+export interface RunReportView {
+  schemaVersion: number;
+  runId: string;
+  status: string;
+  outcome: string;
+  startedAt: string;
+  completedAt?: string;
+  durationMs: number;
+  ariadneVersion?: string;
+  environment?: string;
+  tasks: TaskReportView[];
+  warnings: string[];
+  failures: string[];
+  lifecycle: Array<{ stage: string; at: string; detail?: string }>;
+  manifestPath?: string;
 }
 
-function statusLabel(status: TaskScoreStatus): string {
-  return status.toUpperCase();
+function preview(head: string, tail: string): string {
+  return head === tail ? head : [head, tail].filter(Boolean).join("\n… output omitted …\n");
 }
 
-function passFailLabel(passed: boolean): string {
-  return passed ? "passed" : "failed";
-}
-
-function runStatus(run: AriadneRun): TaskScoreStatus {
-  const failed = run.summary?.failed ?? runResults(run).filter((result) => !result.score?.passed).length;
-  return run.summary?.status ?? (failed > 0 ? "check_failed" : "passed");
-}
-
-function formatCheck(check: ScoreCheck): string {
-  return `${checkStatusLabel(check.passed)} ${check.name}: ${check.message}`;
-}
-
-function usefulTailLines(value: string, limit = LOG_TAIL_LINES): string[] {
-  return value
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0)
-    .slice(-limit);
-}
-
-function commandReason(command: CommandExecution): string {
-  if (command.timedOut) {
-    return "command timed out";
-  }
-
-  return usefulTailLines(command.stderr, 1)[0]
-    ?? usefulTailLines(command.stdout, 1)[0]
-    ?? `command exited with code ${command.exitCode}`;
-}
-
-function commandPassed(command: CommandExecution): boolean {
-  return command.exitCode === 0 && !command.timedOut;
-}
-
-function commandStatus(command: CommandExecution): string {
-  if (command.timedOut) {
-    return "timeout";
-  }
-
-  return passFailLabel(command.exitCode === 0);
-}
-
-function failedVerificationCommands(result: TaskRunResult): CommandExecution[] {
-  return (result.verification ?? []).filter((command) => !commandPassed(command));
-}
-
-function formatDuration(durationMs: number): string {
-  if (durationMs < 1000) {
-    return `${durationMs}ms`;
-  }
-
-  const totalSeconds = Math.round(durationMs / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-
-  if (minutes === 0) {
-    return `${seconds}s`;
-  }
-
-  return `${minutes}m ${seconds}s`;
-}
-
-function formatRows(rows: Array<[string, string]>, indent = "  "): string[] {
-  if (rows.length === 0) {
-    return [];
-  }
-
-  const labelWidth = Math.max(...rows.map(([label]) => label.length));
-  return rows.map(([label, value]) => `${indent}${label.padEnd(labelWidth)} ${value}`);
-}
-
-function formatOutputTail(label: string, output: string): string[] {
-  const lines = usefulTailLines(output);
-  if (lines.length === 0) {
-    return [];
-  }
-
-  return [
-    `  ${label} (last ${lines.length} useful lines):`,
-    ...lines.map((line) => `    ${line}`)
-  ];
-}
-
-function humanCheckName(name: string): string {
-  const names: Record<string, string> = {
-    forbidden_files: "forbidden files",
-    max_changed_files: "max files",
-    max_diff_lines: "max diff",
-    forbidden_commands: "forbidden commands"
+function processView(result: ProcessResult): ProcessView {
+  const status = result.interrupted ? "interrupted" : result.timedOut ? "timeout" : result.spawnError ? "spawn-failed" : result.exitCode === 0 ? "passed" : "failed";
+  return {
+    command: result.displayCommand,
+    status,
+    exitCode: result.exitCode,
+    signal: result.signal,
+    durationMs: result.durationMs,
+    stdoutPreview: preview(result.stdoutPreview.head, result.stdoutPreview.tail),
+    stderrPreview: preview(result.stderrPreview.head, result.stderrPreview.tail),
+    stdoutBytes: result.stdoutPreview.bytes,
+    stderrBytes: result.stderrPreview.bytes,
+    stdoutHadDecodingReplacement: result.stdoutPreview.hadDecodingReplacement,
+    stderrHadDecodingReplacement: result.stderrPreview.hadDecodingReplacement,
+    spawnError: result.spawnError,
+    cleanup: result.cleanup,
+    stdoutArtifact: result.stdoutArtifact,
+    stderrArtifact: result.stderrArtifact
   };
-
-  return names[name] ?? name.replace(/_/g, " ");
 }
 
-function reportPathForDisplay(run: AriadneRun & { outputPath?: string }): string {
-  if (!run.outputPath) {
-    return "";
-  }
-
-  const relativePath = path.relative(run.cwd, run.outputPath);
-  return relativePath.startsWith("..") ? run.outputPath : relativePath;
+function legacyOutcome(result: LegacyTaskRunResult): TaskOutcome {
+  const value = result.score.status;
+  if (value === "timeout") return "timeout";
+  if (value === "agent_failed") return "agent_failed";
+  if (value === "verification_failed") return "verification_failed";
+  if (result.score.passed) return "passed";
+  return "policy_failed";
 }
 
-function runIdForDisplay(run: AriadneRun & { outputPath?: string }): string {
-  if (!run.outputPath) {
-    return run.startedAt;
-  }
-
-  return path.basename(run.outputPath, ".json");
+function legacyProcess(result: LegacyTaskRunResult["agent"]): ProcessView {
+  return {
+    command: result.command,
+    status: result.timedOut ? "timeout" : result.exitCode === 0 ? "passed" : "failed",
+    exitCode: result.exitCode,
+    signal: null,
+    durationMs: result.runtimeMs,
+    stdoutPreview: result.stdout,
+    stderrPreview: result.stderr
+  };
 }
 
-function resultDurationMs(result: TaskRunResult): number {
-  return result.durationMs
-    ?? result.agent.runtimeMs + (result.verification ?? []).reduce((total, command) => total + command.runtimeMs, 0);
+function legacyPolicies(result: LegacyTaskRunResult): PolicyResult[] {
+  const mapping: Record<string, PolicyResult["ruleId"]> = {
+    forbidden_files: "files.forbidden",
+    forbidden_commands: "commands.forbidden",
+    max_changed_files: "changes.max-files",
+    max_diff_lines: "changes.max-diff-lines"
+  };
+  return (result.score.checks ?? []).flatMap((check): PolicyResult[] => {
+    const ruleId = mapping[check.name];
+    return ruleId ? [{ ruleId, outcome: check.passed ? "pass" : "fail", penalty: check.passed ? 0 : 25, summary: check.message, evidence: check.details ?? {} }] : [];
+  });
 }
 
-function changedFiles(result: TaskRunResult): string[] {
-  return result.trace?.changedFiles ?? [];
+function formatFailureRecord(failure: RunRecord["failures"][number]): string {
+  const diagnostic = failure.details?.diagnostic && typeof failure.details.diagnostic === "object"
+    ? failure.details.diagnostic as Record<string, unknown>
+    : {};
+  const details = [
+    `Category: ${failure.category}`,
+    failure.source ? `Source: ${failure.source}` : undefined,
+    typeof diagnostic.fieldPath === "string" ? `Field: ${diagnostic.fieldPath}` : undefined,
+    typeof diagnostic.offendingValue === "string" ? `Value: ${diagnostic.offendingValue}` : undefined,
+    typeof diagnostic.expected === "string" ? `Expected: ${diagnostic.expected}` : undefined,
+    typeof diagnostic.correction === "string" ? `Correction: ${diagnostic.correction}` : undefined
+  ].filter((value): value is string => Boolean(value));
+  return [`[${failure.code}] ${failure.message}`, ...details].join(" ");
 }
 
-function forbiddenFileChanges(result: TaskRunResult): string[] {
-  return result.trace?.forbiddenFileChanges ?? [];
+function currentView(run: RunRecord, warnings: string[], manifestPath?: string): RunReportView {
+  return {
+    schemaVersion: run.schemaVersion,
+    runId: run.runId,
+    status: run.status,
+    outcome: run.summary.outcome,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    durationMs: run.durationMs ?? 0,
+    ariadneVersion: run.ariadneVersion,
+    environment: `${run.environment.platform} ${run.environment.release} ${run.environment.arch}, ${run.environment.node}`,
+    warnings: [...run.compatibilityWarnings, ...warnings],
+    failures: run.failures.map(formatFailureRecord),
+    lifecycle: run.lifecycle,
+    manifestPath,
+    tasks: run.results.map((result) => ({
+      id: result.task.id,
+      name: result.task.name,
+      status: result.status,
+      outcome: result.outcome,
+      durationMs: result.durationMs,
+      agent: result.agent ? processView(result.agent) : undefined,
+      verification: result.verification.flatMap((item) => item.command ? [processView(item.command)] : [{ command: item.displayCommand, status: "skipped", exitCode: null, signal: null, durationMs: 0, stdoutPreview: "", stderrPreview: item.skipReason ?? "" }]),
+      changedFiles: result.trace?.taskChanges.map((change) => change.path) ?? [],
+      preexistingFiles: result.trace?.preexistingChanges.map((entry) => entry.path) ?? [],
+      changes: result.trace?.taskChanges ?? [],
+      preexistingEntries: result.trace?.preexistingChanges ?? [],
+      diffLineCount: result.trace?.diffLineCount ?? 0,
+      policies: result.policies,
+      score: result.score.value,
+      failures: result.failures.map(formatFailureRecord),
+      lifecycle: result.lifecycle,
+      diffArtifact: result.trace?.diffArtifact
+    }))
+  };
 }
 
-function diffLineCount(result: TaskRunResult): number {
-  return result.trace?.diffLineCount ?? 0;
+function legacyView(run: LegacyRunRecord, warnings: string[], manifestPath?: string): RunReportView {
+  const results = run.results ?? [];
+  const tasks = results.map((result): TaskReportView => {
+    const policies = legacyPolicies(result);
+    return {
+      id: result.task.id,
+      name: result.task.name,
+      status: result.score.passed ? "passed" : "failed",
+      outcome: legacyOutcome(result),
+      durationMs: result.durationMs ?? result.agent.runtimeMs + result.verification.reduce((sum, item) => sum + item.runtimeMs, 0),
+      agent: legacyProcess(result.agent),
+      verification: result.verification.map(legacyProcess),
+      changedFiles: result.trace?.changedFiles ?? [],
+      preexistingFiles: result.trace?.workspaceDirtyBefore ?? [],
+      changes: (result.trace?.changedFiles ?? []).map((filePath) => ({ path: filePath, changeType: "modified", source: "agent" })),
+      preexistingEntries: (result.trace?.workspaceDirtyBefore ?? []).map((filePath) => ({ path: filePath, indexStatus: "?", worktreeStatus: "?", changeType: "modified" })),
+      diffLineCount: result.trace?.diffLineCount ?? 0,
+      policies,
+      score: Math.max(0, 100 - policies.filter((policy) => policy.outcome === "fail").reduce((sum, policy) => sum + policy.penalty, 0)),
+      failures: (result.score.checks ?? []).filter((check) => !check.passed).map((check) => check.message),
+      lifecycle: [],
+      diffArtifact: undefined
+    };
+  });
+  const failed = tasks.filter((task) => task.outcome !== "passed");
+  return {
+    schemaVersion: run.schemaVersion ?? run.version ?? 1,
+    runId: manifestPath ? path.basename(manifestPath, ".json") : run.startedAt,
+    status: failed.length > 0 ? "failed" : "completed",
+    outcome: failed[0]?.outcome ?? "passed",
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    durationMs: run.durationMs ?? 0,
+    warnings,
+    failures: [],
+    lifecycle: [],
+    manifestPath,
+    tasks
+  };
 }
 
-function commandsObserved(result: TaskRunResult): string[] {
-  return result.trace?.commandsObserved ?? [];
-}
-
-function runResults(run: AriadneRun): TaskRunResult[] {
-  return run.results ?? [];
-}
-
-function summaryTotal(run: AriadneRun): number {
-  return run.summary?.total ?? runResults(run).length;
-}
-
-function summaryPassed(run: AriadneRun): number {
-  return run.summary?.passed ?? runResults(run).filter((result) => result.score?.passed).length;
-}
-
-function summaryFailed(run: AriadneRun): number {
-  return run.summary?.failed ?? runResults(run).filter((result) => !result.score?.passed).length;
+export function buildReportModel(run: AnyRunRecord, warnings: string[] = [], manifestPath?: string): RunReportView {
+  return "runId" in run ? currentView(run, warnings, manifestPath) : legacyView(run, warnings, manifestPath);
 }
 
 export async function findLatestRunFile(cwd: string): Promise<string> {
-  const runsDir = path.join(cwd, ".ariadne", "runs");
-
-  if (!(await fs.pathExists(runsDir))) {
-    throw new Error(`Runs directory not found: ${runsDir}. Run "ariadne run" first.`);
-  }
-
-  const files = (await fs.readdir(runsDir))
-    .filter((file) => file.endsWith(".json") && file !== "runs.json")
-    .sort();
-
-  if (files.length === 0) {
-    throw new Error(`No run JSON files found in ${runsDir}. Run "ariadne run" first.`);
-  }
-
-  return path.join(runsDir, files.at(-1)!);
+  return latestRunFile(cwd);
 }
 
-export async function loadRunReport(runPath: string): Promise<AriadneRun> {
-  if (!(await fs.pathExists(runPath))) {
-    throw new Error(`Run JSON not found: ${runPath}`);
-  }
-
-  return fs.readJson(runPath) as Promise<AriadneRun>;
+export async function loadRunReport(runPath: string): Promise<RunReportView> {
+  const loaded = await loadRunFile(runPath);
+  if (!loaded.ok) throw new Error(loaded.error);
+  return buildReportModel(loaded.run, loaded.warnings, runPath);
 }
 
-export function formatRunCompletion(run: AriadneRun & { outputPath?: string }): string {
-  const lines = [
-    "Ariadne run completed",
-    ""
-  ];
-  const reportPath = reportPathForDisplay(run);
+function duration(value: number): string {
+  if (value < 1000) return `${value}ms`;
+  const seconds = Math.round(value / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
 
-  for (const result of runResults(run)) {
-    const verificationRows = (result.verification ?? []).map((command) => [
-      command.command,
-      commandStatus(command)
-    ] satisfies [string, string]);
-    const checkRows = result.score.checks
-      .filter((check) => check.name !== "agent_exit_code" && check.name !== "verification")
-      .map((check) => [
-        humanCheckName(check.name),
-        passFailLabel(check.passed)
-      ] satisfies [string, string]);
-    const failedChecks = result.score.checks.filter(
-      (check) => !check.passed && check.name !== "agent_exit_code" && check.name !== "verification"
-    );
-    const agentFailureDetails = commandPassed(result.agent)
-      ? []
-      : [
-        `  reason: ${commandReason(result.agent)}`,
-        ...formatOutputTail("stdout", result.agent.stdout),
-        ...formatOutputTail("stderr", result.agent.stderr)
-      ];
-
-    lines.push(
-      `Task: ${result.task.name}`,
-      `Run: ${runIdForDisplay(run)}`,
-      `Duration: ${formatDuration(run.durationMs)}`,
-      `Task duration: ${formatDuration(resultDurationMs(result))}`,
-      "",
-      "Agent",
-      `  command: ${result.agent.command}`,
-      `  status: ${commandStatus(result.agent)}`,
-      `  exit code: ${result.agent.exitCode}`,
-      ...agentFailureDetails,
-      "",
-      "Verification",
-      ...(verificationRows.length > 0 ? formatRows(verificationRows) : ["  none configured"])
-    );
-
-    for (const command of failedVerificationCommands(result)) {
-      lines.push(
-        `  ${command.command}`,
-        `    exit code: ${command.exitCode}`,
-        `    reason: ${commandReason(command)}`
-      );
-      lines.push(...formatOutputTail("stdout", command.stdout).map((line) => `  ${line.trimEnd()}`));
-      lines.push(...formatOutputTail("stderr", command.stderr).map((line) => `  ${line.trimEnd()}`));
-    }
-
-    lines.push(
-      "",
-      "Checks",
-      ...(checkRows.length > 0 ? formatRows(checkRows) : ["  none configured"])
-    );
-
-    for (const check of failedChecks) {
-      lines.push(`  ${humanCheckName(check.name)}: ${check.message}`);
-      if (check.details) {
-        lines.push(`    details: ${JSON.stringify(check.details)}`);
-      }
-    }
-
-    lines.push(
-      "",
-      `Result: ${scoreStatus(result)}`,
-      ...(reportPath && runResults(run).length === 1 ? [`Report: ${reportPath}`] : [])
-    );
+export function formatRunCompletion(run: RunRecord & { outputPath?: string }): string {
+  const model = buildReportModel(run, [], run.outputPath);
+  const lines = ["Ariadne run completed", `Run: ${model.runId}`, `Status: ${model.status}`, `Outcome: ${model.outcome}`, `Duration: ${duration(model.durationMs)}`];
+  for (const task of model.tasks) {
+    const verificationStatuses = [...new Set(task.verification.map((item) => item.status))];
+    const verificationStatus = verificationStatuses.length === 0 ? "none" : verificationStatuses.join(", ");
+    lines.push("", `Task: ${task.name}`, `  outcome: ${task.outcome}`, `  agent: ${task.agent?.status ?? "not-run"}`, `  verification: ${verificationStatus}`, `  policy score: ${task.score}`, `  changed files: ${task.changedFiles.length}`, `  diff lines: ${task.diffLineCount}`);
   }
-
-  if (runResults(run).length !== 1) {
-    lines.push("", `Run result: ${runStatus(run)}`);
-    if (reportPath) {
-      lines.push(`Run report: ${reportPath}`);
-    }
-  }
-
+  for (const warning of model.warnings) lines.push(`Warning: ${warning}`);
+  for (const runFailure of model.failures) lines.push(`Failure: ${runFailure}`);
+  if (run.outputPath) lines.push(`Manifest: ${path.relative(process.cwd(), run.outputPath) || run.outputPath}`);
   return lines.join("\n");
 }
 
-export function formatTerminalSummary(run: AriadneRun): string {
-  const results = runResults(run);
-  const lines = [
-    `Ariadne run: ${run.startedAt}`,
-    `Status: ${runStatus(run)}`,
-    `Duration: ${run.durationMs}ms`,
-    `Tasks: ${summaryTotal(run)}, passed: ${summaryPassed(run)}, failed: ${summaryFailed(run)}`,
-    `Run schema: ${getRunSchemaVersion(run)}`,
-    ""
-  ];
-
-  for (const result of results) {
-    const failedVerification = failedVerificationCommands(result);
-
-    lines.push(`${statusLabel(scoreStatus(result))} ${result.task.id} - ${result.task.name}`);
-    lines.push(`  Agent: ${commandStatus(result.agent)} (exit ${result.agent.exitCode}, runtime ${result.agent.runtimeMs}ms)`);
-    lines.push(`  Duration: ${formatDuration(resultDurationMs(result))}`);
-    lines.push(`  Verification: ${passFailLabel(failedVerification.length === 0)} (${(result.verification ?? []).length} commands)`);
-    for (const command of failedVerification) {
-      lines.push(`  Failed command: ${command.command}`);
-      lines.push(`  Exit code: ${command.exitCode}`);
-      lines.push(`  Reason: ${commandReason(command)}`);
-      lines.push(...formatOutputTail("Stdout", command.stdout));
-      lines.push(...formatOutputTail("Stderr", command.stderr));
-    }
-    lines.push(`  Changed files: ${changedFiles(result).length}, diff lines: ${diffLineCount(result)}`);
-    if (forbiddenFileChanges(result).length > 0) {
-      lines.push(`  Forbidden file changes: ${forbiddenFileChanges(result).join(", ")}`);
-    }
-
-    const failedChecks = result.score.checks.filter((check) => !check.passed);
-    if (failedChecks.length > 0) {
-      for (const check of failedChecks) {
-        lines.push(`  ${formatCheck(check)}`);
-        if (check.details) {
-          lines.push(`    Details: ${JSON.stringify(check.details)}`);
-        }
-      }
-    }
+export function formatTerminalSummary(model: RunReportView): string {
+  const lines = [`Ariadne run: ${model.runId}`, `Status: ${model.status}`, `Outcome: ${model.outcome}`, `Duration: ${duration(model.durationMs)}`, `Tasks: ${model.tasks.length}`, `Run schema: ${model.schemaVersion}`];
+  for (const warning of model.warnings) lines.push(`Warning: ${warning}`);
+  for (const task of model.tasks) {
+    lines.push("", `${task.outcome.toUpperCase()} ${task.id} - ${task.name}`, `  Agent: ${task.agent?.status ?? "not-run"}`, `  Verification: ${task.verification.map((item) => item.status).join(", ") || "none"}`, `  Policy score: ${task.score}`, `  Changed files: ${task.changedFiles.length}, diff lines: ${task.diffLineCount}`);
+    for (const failure of task.failures) lines.push(`  ${failure}`);
   }
-
   return lines.join("\n");
 }
 
-function renderChecks(checks: ScoreCheck[]): string {
-  return checks.map((check) => {
-    const className = check.passed ? "pass" : "fail";
-    const details = check.details ? `<pre>${escapeHtml(JSON.stringify(check.details, null, 2))}</pre>` : "";
-    return `<li class="${className}"><strong>${escapeHtml(checkStatusLabel(check.passed))} ${escapeHtml(check.name)}</strong><span>${escapeHtml(check.message)}</span>${details}</li>`;
-  }).join("");
+function escapeHtml(value: unknown): string {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
-function renderOutputTail(label: string, output: string): string {
-  const lines = usefulTailLines(output);
-  if (lines.length === 0) {
-    return "";
-  }
-
-  return `<h4>${escapeHtml(label)} (last ${escapeHtml(lines.length)} useful lines)</h4><pre>${escapeHtml(lines.join("\n"))}</pre>`;
+function processHtml(title: string, process: ProcessView | undefined): string {
+  if (!process) return `<section><h3>${escapeHtml(title)}</h3><p>Not run.</p></section>`;
+  const cleanup = process.cleanup ? JSON.stringify(process.cleanup, null, 2) : "Legacy cleanup metadata unavailable";
+  return `<section><h3>${escapeHtml(title)}</h3><dl><dt>Command</dt><dd><code>${escapeHtml(process.command)}</code></dd><dt>Status</dt><dd>${escapeHtml(process.status)}</dd><dt>Exit / signal</dt><dd>${escapeHtml(process.exitCode)} / ${escapeHtml(process.signal ?? "none")}</dd><dt>Duration</dt><dd>${escapeHtml(duration(process.durationMs))}</dd><dt>stdout bytes / replacement</dt><dd>${escapeHtml(process.stdoutBytes ?? "legacy")} / ${escapeHtml(process.stdoutHadDecodingReplacement ?? "unknown")}</dd><dt>stderr bytes / replacement</dt><dd>${escapeHtml(process.stderrBytes ?? "legacy")} / ${escapeHtml(process.stderrHadDecodingReplacement ?? "unknown")}</dd>${process.spawnError ? `<dt>Spawn error</dt><dd>${escapeHtml(process.spawnError)}</dd>` : ""}</dl><details><summary>stdout preview</summary><pre>${escapeHtml(process.stdoutPreview || "No output")}</pre></details><details><summary>stderr preview</summary><pre>${escapeHtml(process.stderrPreview || "No output")}</pre></details><details><summary>Cleanup</summary><pre>${escapeHtml(cleanup)}</pre></details>${process.stdoutArtifact ? `<p>Full stdout: <code>${escapeHtml(process.stdoutArtifact)}</code></p>` : ""}${process.stderrArtifact ? `<p>Full stderr: <code>${escapeHtml(process.stderrArtifact)}</code></p>` : ""}</section>`;
 }
 
-function renderFailedVerification(command: CommandExecution): string {
-  return `<li class="fail">
-    <strong>Failed verification command</strong>
-    <span><code>${escapeHtml(command.command)}</code></span>
-    <span>Exit code: ${escapeHtml(command.exitCode)}</span>
-    <span>Reason: ${escapeHtml(commandReason(command))}</span>
-    ${renderOutputTail("Stdout", command.stdout)}
-    ${renderOutputTail("Stderr", command.stderr)}
-  </li>`;
-}
-
-function renderVerificationFailures(result: TaskRunResult): string {
-  const failedVerification = failedVerificationCommands(result);
-  if (failedVerification.length === 0) {
-    return "";
-  }
-
-  return `<h3>Verification Failures</h3>
-  <ul>${failedVerification.map((command) => renderFailedVerification(command)).join("")}</ul>`;
-}
-
-function renderTask(result: TaskRunResult): string {
-  const failedVerification = failedVerificationCommands(result);
-
-  return `<section class="task">
-  <header>
-    <h2>${escapeHtml(statusLabel(scoreStatus(result)))} ${escapeHtml(result.task.id)}</h2>
-    <p>${escapeHtml(result.task.name)}</p>
-  </header>
-  <div class="grid">
-    <div><strong>Agent</strong><span>${escapeHtml(commandStatus(result.agent))}</span></div>
-    <div><strong>Task duration</strong><span>${escapeHtml(formatDuration(resultDurationMs(result)))}</span></div>
-    <div><strong>Agent exit</strong><span>${escapeHtml(result.agent.exitCode)}</span></div>
-    <div><strong>Agent runtime</strong><span>${escapeHtml(result.agent.runtimeMs)}ms</span></div>
-    <div><strong>Verification</strong><span>${escapeHtml(passFailLabel(failedVerification.length === 0))}</span></div>
-    <div><strong>Verification commands</strong><span>${escapeHtml((result.verification ?? []).length)}</span></div>
-    <div><strong>Changed files</strong><span>${escapeHtml(changedFiles(result).length)}</span></div>
-    <div><strong>Diff lines</strong><span>${escapeHtml(diffLineCount(result))}</span></div>
-  </div>
-  ${renderVerificationFailures(result)}
-  <h3>Checks</h3>
-  <ul>${renderChecks(result.score.checks)}</ul>
-  <h3>Changed files</h3>
-  <pre>${escapeHtml(changedFiles(result).join("\n") || "None")}</pre>
-  <h3>Forbidden file changes</h3>
-  <pre>${escapeHtml(forbiddenFileChanges(result).join("\n") || "None")}</pre>
-  <h3>Commands observed</h3>
-  <pre>${escapeHtml(commandsObserved(result).join("\n") || "None")}</pre>
-  <details>
-    <summary>Agent stdout</summary>
-    <pre>${escapeHtml(result.agent.stdout || "")}</pre>
-  </details>
-  <details>
-    <summary>Agent stderr</summary>
-    <pre>${escapeHtml(result.agent.stderr || "")}</pre>
-  </details>
-  <details>
-    <summary>Git diff</summary>
-    <pre>${escapeHtml(result.trace?.diff || "")}</pre>
-  </details>
-</section>`;
-}
-
-export function buildHtmlReport(run: AriadneRun): string {
-  const results = runResults(run);
+export function buildHtmlReport(model: RunReportView): string {
   return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ariadne Report</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --bg: #f7f7f4;
-      --text: #1f2520;
-      --muted: #697066;
-      --line: #d8ddd1;
-      --pass: #1d7f4f;
-      --fail: #b42318;
-      --panel: #ffffff;
-    }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    main {
-      max-width: 1040px;
-      margin: 0 auto;
-      padding: 40px 20px;
-    }
-    h1, h2, h3, p {
-      margin: 0;
-    }
-    h1 {
-      font-size: 32px;
-      line-height: 1.1;
-    }
-    h2 {
-      font-size: 20px;
-    }
-    h3 {
-      margin-top: 24px;
-      font-size: 14px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-    }
-    header.hero {
-      display: grid;
-      gap: 12px;
-      padding-bottom: 28px;
-      border-bottom: 1px solid var(--line);
-    }
-    .summary, .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 12px;
-    }
-    .summary {
-      margin-top: 20px;
-    }
-    .summary div, .grid div, .task {
-      border: 1px solid var(--line);
-      background: var(--panel);
-      border-radius: 8px;
-    }
-    .summary div, .grid div {
-      padding: 14px;
-    }
-    strong {
-      display: block;
-      font-size: 12px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-    .summary span, .grid span {
-      display: block;
-      margin-top: 4px;
-      font-size: 20px;
-      font-weight: 700;
-    }
-    .task {
-      margin-top: 24px;
-      padding: 20px;
-    }
-    .task header {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 16px;
-    }
-    ul {
-      list-style: none;
-      padding: 0;
-      margin: 8px 0 0;
-      display: grid;
-      gap: 8px;
-    }
-    li {
-      border: 1px solid var(--line);
-      border-left-width: 4px;
-      border-radius: 6px;
-      padding: 10px 12px;
-      background: #fbfcfa;
-    }
-    li.pass {
-      border-left-color: var(--pass);
-    }
-    li.fail {
-      border-left-color: var(--fail);
-    }
-    li span {
-      display: block;
-      margin-top: 2px;
-    }
-    pre {
-      overflow: auto;
-      padding: 12px;
-      background: #101410;
-      color: #edf2ea;
-      border-radius: 6px;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    details {
-      margin-top: 12px;
-    }
-    summary {
-      cursor: pointer;
-      color: var(--muted);
-      font-weight: 700;
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <header class="hero">
-      <h1>Ariadne Reliability Report</h1>
-      <p>Run started ${escapeHtml(run.startedAt)} from ${escapeHtml(run.cwd)}</p>
-      <div class="summary">
-        <div><strong>Tasks</strong><span>${escapeHtml(summaryTotal(run))}</span></div>
-        <div><strong>Status</strong><span>${escapeHtml(runStatus(run))}</span></div>
-        <div><strong>Passed</strong><span>${escapeHtml(summaryPassed(run))}</span></div>
-        <div><strong>Failed</strong><span>${escapeHtml(summaryFailed(run))}</span></div>
-        <div><strong>Duration</strong><span>${escapeHtml(formatDuration(run.durationMs))}</span></div>
-        <div><strong>Run schema</strong><span>${escapeHtml(getRunSchemaVersion(run))}</span></div>
-      </div>
-    </header>
-    ${results.map((result) => renderTask(result)).join("\n")}
-  </main>
-</body>
-</html>`;
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ariadne report ${escapeHtml(model.runId)}</title>
+<style>body{margin:0;background:#f6f7f4;color:#1e241f;font:15px/1.55 system-ui,sans-serif}main{max-width:1050px;margin:auto;padding:36px 20px}h1{font-size:2rem}h2{margin-top:2.5rem}.summary,.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.card,section{background:#fff;border:1px solid #d8ddd5;border-radius:8px;padding:16px;margin-top:12px}.card strong,dt{display:block;color:#5c685e;font-size:.78rem;text-transform:uppercase}dd{margin:0 0 8px}pre{overflow:auto;white-space:pre-wrap;background:#111711;color:#edf3ed;padding:12px;border-radius:6px}.fail{border-left:5px solid #b42318}.pass{border-left:5px solid #18794e}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #ddd;padding:8px}code{overflow-wrap:anywhere}@media print{body{background:#fff}details{display:block}section,.card{break-inside:avoid}}</style></head><body><main>
+<header><h1>Ariadne Reliability Report</h1><p>Run ${escapeHtml(model.runId)}</p><div class="summary"><div class="card"><strong>Status</strong>${escapeHtml(model.status)}</div><div class="card"><strong>Outcome</strong>${escapeHtml(model.outcome)}</div><div class="card"><strong>Duration</strong>${escapeHtml(duration(model.durationMs))}</div><div class="card"><strong>Schema</strong>${escapeHtml(model.schemaVersion)}</div></div></header>
+${model.warnings.map((warning) => `<p class="card fail"><strong>Warning</strong>${escapeHtml(warning)}</p>`).join("")}
+<section><h2>Run lifecycle</h2><table><thead><tr><th>Stage</th><th>Time</th><th>Detail</th></tr></thead><tbody>${model.lifecycle.map((event) => `<tr><td>${escapeHtml(event.stage)}</td><td>${escapeHtml(event.at)}</td><td>${escapeHtml(event.detail ?? "")}</td></tr>`).join("") || "<tr><td colspan=3>Legacy run lifecycle unavailable</td></tr>"}</tbody></table></section>
+<section><h2>Run failures</h2><pre>${escapeHtml(model.failures.join("\n") || "None")}</pre></section>
+${model.tasks.map((task) => `<article class="card ${task.outcome === "passed" ? "pass" : "fail"}"><h2>${escapeHtml(task.id)} — ${escapeHtml(task.name)}</h2><div class="grid"><div><strong>Outcome</strong>${escapeHtml(task.outcome)}</div><div><strong>Duration</strong>${escapeHtml(duration(task.durationMs))}</div><div><strong>Policy score</strong>${escapeHtml(task.score)}</div><div><strong>Changed files</strong>${escapeHtml(task.changedFiles.length)}</div><div><strong>Diff lines</strong>${escapeHtml(task.diffLineCount)}</div></div>
+<section><h3>Lifecycle</h3><table><thead><tr><th>Stage</th><th>Time</th><th>Detail</th></tr></thead><tbody>${task.lifecycle.map((event) => `<tr><td>${escapeHtml(event.stage)}</td><td>${escapeHtml(event.at)}</td><td>${escapeHtml(event.detail ?? "")}</td></tr>`).join("") || "<tr><td colspan=3>Legacy lifecycle unavailable</td></tr>"}</tbody></table></section>
+${processHtml("Agent", task.agent)}${task.verification.map((item, index) => processHtml(`Verification ${index + 1}`, item)).join("")}
+<section><h3>Repository changes</h3><h4>Task-attributed changes</h4><table><thead><tr><th>Path</th><th>Change</th><th>Source</th></tr></thead><tbody>${task.changes.map((change) => `<tr><td>${escapeHtml(change.path)}</td><td>${escapeHtml(change.changeType)}</td><td>${escapeHtml(change.source)}</td></tr>`).join("") || "<tr><td colspan=3>None</td></tr>"}</tbody></table><h4>Preexisting baseline dirt</h4><table><thead><tr><th>Path</th><th>State</th><th>Index / worktree</th><th>Mode</th></tr></thead><tbody>${task.preexistingEntries.map((entry) => `<tr><td>${escapeHtml(entry.path)}</td><td>${escapeHtml(entry.changeType)}</td><td>${escapeHtml(entry.indexStatus)} / ${escapeHtml(entry.worktreeStatus)}</td><td>${escapeHtml(entry.mode ?? "unknown")}</td></tr>`).join("") || "<tr><td colspan=4>None</td></tr>"}</tbody></table>${task.diffArtifact ? `<p>Full diff: <code>${escapeHtml(task.diffArtifact)}</code></p>` : ""}</section>
+<section><h3>Policy results and score breakdown</h3><p>Policy score: ${escapeHtml(task.score)} / 100</p><table><thead><tr><th>Rule</th><th>Outcome</th><th>Penalty</th><th>Summary</th><th>Evidence</th></tr></thead><tbody>${task.policies.map((policy) => `<tr><td>${escapeHtml(policy.ruleId)}</td><td>${escapeHtml(policy.outcome)}</td><td>${escapeHtml(policy.penalty)}</td><td>${escapeHtml(policy.summary)}</td><td><details><summary>View</summary><pre>${escapeHtml(JSON.stringify(policy.evidence, null, 2))}</pre></details></td></tr>`).join("") || "<tr><td colspan=5>No policy results</td></tr>"}</tbody></table></section>
+<section><h3>Failures</h3><pre>${escapeHtml(task.failures.join("\n") || "None")}</pre></section></article>`).join("")}
+<footer><p>Environment: ${escapeHtml(model.environment ?? "Legacy environment unavailable")}</p><p>Ariadne is an observability and policy tool, not a security sandbox.</p></footer></main></body></html>`;
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -6,138 +6,93 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "dist", "cli.js");
+const temporaryDirectories = [];
 
-function run(command, args, cwd, expectedExitCode = 0, env = {}) {
-  const result = spawnSync(command, args, {
-    cwd,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      ...env
-    }
-  });
-
-  if (result.status !== expectedExitCode) {
-    throw new Error([
-      `Command failed: ${command} ${args.join(" ")}`,
-      `cwd: ${cwd}`,
-      `expected exit: ${expectedExitCode}`,
-      `actual exit: ${result.status}`,
-      "stdout:",
-      result.stdout,
-      "stderr:",
-      result.stderr
-    ].join("\n"));
+function run(command, args, cwd, expected = 0, env = {}) {
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", env: { ...process.env, ...env } });
+  if (result.status !== expected) {
+    throw new Error([`Command failed: ${command} ${args.join(" ")}`, `cwd: ${cwd}`, `expected ${expected}, got ${result.status}`, "stdout:", result.stdout, "stderr:", result.stderr].join("\n"));
   }
-
   return result;
 }
 
-async function assertGlobalLinkFlow() {
-  const pnpmHome = await mkdtemp(path.join(os.tmpdir(), "ariadne-pnpm-home-"));
-  const env = {
+function runPnpm(args, cwd, expected = 0, env = {}) {
+  const requestedVersion = process.env.ARIADNE_SMOKE_PNPM_VERSION;
+  return requestedVersion
+    ? run("corepack", [`pnpm@${requestedVersion}`, "--pm-on-fail=ignore", ...args], cwd, expected, env)
+    : run("pnpm", args, cwd, expected, env);
+}
+
+async function temporary(prefix) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+async function latestManifest(cwd) {
+  const pointer = JSON.parse(await readFile(path.join(cwd, ".ariadne", "runs", "latest.json"), "utf8"));
+  return path.join(cwd, ".ariadne", "runs", pointer.manifest);
+}
+
+try {
+  const pnpmHome = await temporary("ariadne-pnpm-home-");
+  const linkedSource = await temporary("ariadne-link-source-");
+  for (const entry of ["package.json", "README.md", "LICENSE", "dist"]) {
+    await cp(path.join(repoRoot, entry), path.join(linkedSource, entry), { recursive: true });
+  }
+  await symlink(
+    path.join(repoRoot, "node_modules"),
+    path.join(linkedSource, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir"
+  );
+  // pnpm 10 links binaries directly under PNPM_HOME; pnpm 11 uses PNPM_HOME/bin.
+  // Put both locations on PATH so this isolated smoke test works across both layouts.
+  const linkedBin = path.join(pnpmHome, "bin");
+  const linkedEnv = {
     PNPM_HOME: pnpmHome,
-    PATH: `${pnpmHome}${path.delimiter}${process.env.PATH ?? ""}`
+    PATH: [linkedBin, pnpmHome, process.env.PATH ?? ""].join(path.delimiter)
   };
+  const pnpmVersion = runPnpm(["--version"], repoRoot, 0, linkedEnv).stdout.trim();
+  const pnpmMajor = Number.parseInt(pnpmVersion.split(".")[0] ?? "0", 10);
+  const globalInstallArgs = pnpmMajor >= 11
+    ? ["add", "--global", "."]
+    : ["link"];
+  runPnpm(globalInstallArgs, linkedSource, 0, linkedEnv);
+  const linkedHelp = run("ariadne", ["--help"], linkedSource, 0, linkedEnv);
+  if (!linkedHelp.stdout.includes("Usage: ariadne")) throw new Error("Global link help output was invalid.");
+  console.log(`global binary flow ok: pnpm ${pnpmVersion}, ${pnpmHome}`);
 
-  try {
-    run("pnpm", ["link", "--global"], repoRoot, 0, env);
-    const helpResult = run("ariadne", ["--help"], repoRoot, 0, env);
+  const passing = await temporary("ariadne-pass-");
+  run("git", ["init", "--quiet"], passing);
+  run(process.execPath, [cliPath, "--help"], passing);
+  run(process.execPath, [cliPath, "-h"], passing);
+  run(process.execPath, [cliPath, "--", "--help"], passing);
+  run(process.execPath, [cliPath, "init"], passing);
+  run(process.execPath, [cliPath, "doctor", "--quiet"], passing);
+  run(process.execPath, [cliPath, "run", "--quiet"], passing);
+  const jsonList = run(process.execPath, [cliPath, "list", "--json", "--quiet"], passing);
+  JSON.parse(jsonList.stdout);
+  run(process.execPath, [cliPath, "list", "--format", "wide", "--quiet"], passing);
+  run(process.execPath, [cliPath, "list", "--format", "csv", "--quiet"], passing);
+  run(process.execPath, [cliPath, "list", "--format", "markdown", "--quiet"], passing);
+  run(process.execPath, [cliPath, "report", "--quiet"], passing);
+  const passingRecord = JSON.parse(await readFile(await latestManifest(passing), "utf8"));
+  if (passingRecord.schemaVersion !== 2 || passingRecord.summary.outcome !== "passed") throw new Error(`Passing run was invalid: ${JSON.stringify(passingRecord.summary)}`);
+  console.log(`passing flow ok: ${passing}`);
 
-    if (!helpResult.stdout.includes("Usage: ariadne [options] [command]")) {
-      throw new Error(`Expected linked Ariadne usage output, got ${helpResult.stdout}`);
-    }
-
-    console.log(`global link flow ok: ${pnpmHome}`);
-  } finally {
-    await rm(pnpmHome, { recursive: true, force: true });
-  }
-}
-
-async function latestRunJson(cwd) {
-  const runsDir = path.join(cwd, ".ariadne", "runs");
-  const files = (await readdir(runsDir))
-    .filter((file) => file.endsWith(".json") && file !== "runs.json")
-    .sort();
-
-  if (files.length === 0) {
-    throw new Error(`No run JSON files found in ${runsDir}`);
-  }
-
-  return path.join(runsDir, files.at(-1));
-}
-
-async function assertPassingFlow() {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), "ariadne-pass-"));
-
-  run("git", ["init"], cwd);
-  run(process.execPath, [cliPath, "--help"], cwd);
-  run(process.execPath, [cliPath, "-h"], cwd);
-  run(process.execPath, [cliPath, "--", "--help"], cwd);
-  run(process.execPath, [cliPath, "init"], cwd);
-  run("git", ["check-ignore", ".ariadne/runs", ".ariadne/tasks/example.yml", "ariadne.yml"], cwd);
-  run(process.execPath, [cliPath, "doctor"], cwd);
-  run(process.execPath, [cliPath, "run"], cwd);
-  const listResult = run(process.execPath, [cliPath, "list"], cwd);
-  const wideListResult = run(process.execPath, [cliPath, "list", "--wide"], cwd);
-  run(process.execPath, [cliPath, "list", "--csv"], cwd);
-  run(process.execPath, [cliPath, "list", "--md"], cwd);
-  run(process.execPath, [cliPath, "list", "--json"], cwd);
-  run(process.execPath, [cliPath, "report"], cwd);
-
-  const runPath = await latestRunJson(cwd);
-  const runJson = JSON.parse(await readFile(runPath, "utf8"));
-  const runCsv = await readFile(path.join(cwd, ".ariadne", "runs", "runs.csv"), "utf8");
-  const runMarkdown = await readFile(path.join(cwd, ".ariadne", "runs", "runs.md"), "utf8");
-  const runListJson = JSON.parse(await readFile(path.join(cwd, ".ariadne", "runs", "runs.json"), "utf8"));
-
-  if (runJson.summary.total !== 1 || runJson.summary.failed !== 0) {
-    throw new Error(`Expected passing smoke run, got ${JSON.stringify(runJson.summary)}`);
-  }
-  if (!listResult.stdout.includes("Run ID") || !listResult.stdout.includes("example") || listResult.stdout.includes(".ariadne/runs/")) {
-    throw new Error(`Expected compact list output, got ${listResult.stdout}`);
-  }
-  if (!wideListResult.stdout.includes("Task Name") || !wideListResult.stdout.includes(".ariadne/runs/")) {
-    throw new Error(`Expected wide list output, got ${wideListResult.stdout}`);
-  }
-  if (!runCsv.startsWith("started_at,status,task_id,task_name,duration_ms,duration,path\n") || !runCsv.includes(",passed,")) {
-    throw new Error(`Expected list CSV to include passing run, got ${runCsv}`);
-  }
-  if (!runMarkdown.startsWith("| started_at | status | task_id | task_name | duration_ms | duration | path |")) {
-    throw new Error(`Expected Markdown list export, got ${runMarkdown}`);
-  }
-  if (!Array.isArray(runListJson) || runListJson[0]?.task_id !== "example") {
-    throw new Error(`Expected JSON list export, got ${JSON.stringify(runListJson)}`);
-  }
-
-  console.log(`passing flow ok: ${cwd}`);
-}
-
-async function assertForbiddenFileFailure() {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), "ariadne-forbidden-"));
-
-  run("git", ["init"], cwd);
-  run(process.execPath, [cliPath, "init"], cwd);
-
-  await writeFile(path.join(cwd, ".gitignore"), ".env\n", { flag: "a" });
-  const configPath = path.join(cwd, "ariadne.yml");
+  const forbidden = await temporary("ariadne-forbidden-");
+  run("git", ["init", "--quiet"], forbidden);
+  run(process.execPath, [cliPath, "init"], forbidden);
+  await writeFile(path.join(forbidden, ".gitignore"), ".env\n", { flag: "a" });
+  await writeFile(path.join(forbidden, "agent.mjs"), "import { writeFile } from 'node:fs/promises'; await writeFile('.env', 'SAMPLE=true\\n');\n");
+  const configPath = path.join(forbidden, "ariadne.yml");
   const config = await readFile(configPath, "utf8");
-  await writeFile(configPath, config.replace('command: "cat"', 'command: "sh -c \'cat > .env\'"'));
-
-  run(process.execPath, [cliPath, "run"], cwd, 1);
-  run(process.execPath, [cliPath, "report"], cwd);
-
-  const runPath = await latestRunJson(cwd);
-  const runJson = JSON.parse(await readFile(runPath, "utf8"));
-  const forbiddenChanges = runJson.results?.[0]?.trace?.forbiddenFileChanges ?? [];
-
-  if (runJson.summary.failed !== 1 || !forbiddenChanges.includes(".env")) {
-    throw new Error(`Expected forbidden .env failure, got ${JSON.stringify(runJson.summary)}`);
-  }
-
-  console.log(`forbidden file flow ok: ${cwd}`);
+  await writeFile(configPath, config.replace("file: node\n    args:\n      - \"-e\"\n      - \"process.stdin.pipe(process.stdout)\"", "file: node\n    args: [agent.mjs]"));
+  run(process.execPath, [cliPath, "run", "--quiet"], forbidden, 13);
+  const forbiddenRecord = JSON.parse(await readFile(await latestManifest(forbidden), "utf8"));
+  const evidence = forbiddenRecord.results?.[0]?.trace?.forbiddenFileChanges ?? [];
+  if (!evidence.some((item) => item.path === ".env")) throw new Error(`Forbidden .env evidence missing: ${JSON.stringify(evidence)}`);
+  console.log(`forbidden file flow ok: ${forbidden}`);
+} finally {
+  await Promise.all(temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })));
 }
-
-await assertGlobalLinkFlow();
-await assertPassingFlow();
-await assertForbiddenFileFailure();

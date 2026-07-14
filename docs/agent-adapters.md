@@ -1,69 +1,72 @@
 # Agent Adapters
 
-Ariadne runs coding agents through one configured shell command. It does not use an SDK, hosted queue, browser session, or persistent daemon.
+Ariadne launches one configured process per task. It has no SDK requirement, hosted queue, browser session, persistent daemon, or hidden execution service.
 
-## Contract
+## Process contract
 
-For each task, `ariadne run`:
+Version 2 prefers a direct executable with an argument array:
 
-- loads a task YAML file;
-- sends `task.prompt` to `agent.command` through stdin;
-- sets task metadata in environment variables;
-- waits for the command to exit;
-- captures stdout, stderr, exit code, runtime, timeout status, git diff, changed files, and verification results.
+```yaml
+agent:
+  command:
+    kind: exec
+    file: codex
+    args: [exec, --sandbox, workspace-write, -]
+  timeout_ms: 600000
+```
 
-The agent command should exit `0` only when it believes the task is complete. Ariadne still runs verification and scoring after that.
+`kind: exec` never invokes a shell. Arguments retain exact boundaries, which avoids platform quoting ambiguity and accidental shell expansion. Use `kind: shell` explicitly when pipes, redirects, expansion, or compound syntax are intentional:
+
+```yaml
+command:
+  kind: shell
+  command: "pnpm typecheck && pnpm test"
+```
+
+Legacy v1 strings are adapted to explicit shell processes and produce a deprecation warning.
+
+For every task, Ariadne sends `task.prompt` through stdin, waits for termination, and records spawn/nonzero/signal/timeout/interruption/cleanup states separately. Agent nonzero exits still permit verification. Spawn failures skip verification. After a timeout, verification proceeds only when the launched POSIX process group is no longer observable or the Windows `taskkill` cleanup command reported success; the Windows result is still explicitly best-effort.
 
 ## Environment
 
-Each agent process receives:
+Agent processes receive:
 
-- `ARIADNE_TASK_ID`: task id after YAML/default validation.
-- `ARIADNE_TASK_NAME`: task display name.
-- `ARIADNE_TASK_FILE`: absolute path to the task YAML file.
-- `ARIADNE_TASK_PROMPT`: same prompt text sent through stdin.
+- `ARIADNE_TASK_ID`
+- `ARIADNE_TASK_NAME`
+- `ARIADNE_TASK_FILE` as a repository-relative path
+- `ARIADNE_TASK_PROMPT`
 
-Verification commands receive `ARIADNE_TASK_ID`, `ARIADNE_TASK_NAME`, and `ARIADNE_TASK_FILE`.
+Verification processes receive the first three variables, but not the raw prompt. Run manifests persist prompt hash and byte length rather than prompt text. Environment values are never persisted; only the names of explicitly provided variables are recorded. Arguments with common secret-bearing flag names receive best-effort redaction in manifests.
 
-## Codex CLI Example
-
-Keep the trailing `-` so Codex reads the Ariadne prompt from stdin.
+## Generic Node adapter
 
 ```yaml
 agent:
-  command: "codex exec --sandbox workspace-write -"
-  timeout_ms: 600000
+  command:
+    kind: exec
+    file: node
+    args: [scripts/agent.mjs]
 ```
-
-For stricter local runs, configure Codex approval and sandbox flags according to your own repository policy.
-
-## Generic Shell Agent Example
-
-```yaml
-agent:
-  command: "node scripts/sample-agent.mjs"
-  timeout_ms: 600000
-```
-
-Minimal adapter:
 
 ```js
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 
-const prompt = await new Promise((resolve) => {
-  let data = "";
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (chunk) => { data += chunk; });
-  process.stdin.on("end", () => resolve(data));
-});
-
+let prompt = "";
+process.stdin.setEncoding("utf8");
+for await (const chunk of process.stdin) prompt += chunk;
 await writeFile("AGENT_NOTES.md", `Task ${process.env.ARIADNE_TASK_ID}\n\n${prompt}\n`);
 ```
 
-## Interactive Agents
+Exit `0` only when the adapter believes its work completed. Ariadne independently evaluates verification and policies.
 
-Interactive tools can hang when they wait for approval prompts, editor input, or login flows. Prefer non-interactive flags and preconfigured credentials already available to the local shell. Keep `agent.timeout_ms` high enough for real work but low enough to fail stuck runs.
+## Output and command evidence
 
-## Capture Limits
+Bytes read from the launched process's stdout/stderr pipes stream directly to per-process artifact files. Output written elsewhere, emitted after descriptors are detached, or hidden by another tool is outside Ariadne's visibility. The manifest retains bounded 4 KiB head and 12 KiB tail previews, total captured byte counts, and whether invalid UTF-8 required replacement. Captured large output is not fully buffered in memory.
 
-Ariadne captures process output and git state after each task. It does not perform OS-level process auditing, terminal replay, network tracing, or hidden filesystem monitoring. Forbidden command checks use configured command rules matched against configured/observed command lines, so they are a scoring signal rather than a security sandbox.
+Configured agent and verification processes are known execution evidence and are checked before launch against forbidden-command rules. Command-looking text printed by an agent is unverified reported evidence: it can create a warning, but it is not proof of execution and cannot produce a hard command-policy violation by itself.
+
+## Interactive tools and limits
+
+Interactive agents can hang on approval, editor, or authentication prompts. Prefer noninteractive flags and already-configured local credentials. Ariadne attempts TERM then KILL against the launched POSIX process group and verifies whether that group remains visible. A descendant that creates a new session/process group can escape that boundary. Windows uses best-effort `taskkill /T` then `/F` and records cleanup limitations.
+
+Ariadne does not audit syscalls, network activity, subprocess creation, terminal replay, or hidden filesystem access. It is not a security sandbox.

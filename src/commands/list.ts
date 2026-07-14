@@ -1,40 +1,35 @@
-import path from "node:path";
 import {
   formatCompactRunList,
+  formatRunCsv,
+  formatRunJson,
+  formatRunMarkdown,
   formatWideRunList,
   listRuns,
-  writeRunCsv,
-  writeRunJson,
-  writeRunMarkdown
+  writeRunOutput
 } from "../core/runs.js";
 
+export type ListFormat = "compact" | "wide" | "json" | "csv" | "markdown";
+
 export interface ListOptions {
-  wide?: boolean;
-  csv?: boolean;
-  md?: boolean;
-  json?: boolean;
+  format?: ListFormat;
+  output?: string;
+  quiet?: boolean;
 }
 
-function displayPath(cwd: string, outputPath: string): string {
-  const relativePath = path.relative(cwd, outputPath);
-  return relativePath.startsWith("..") ? outputPath : relativePath;
-}
-
-export async function listCommand(cwd: string, options: ListOptions = {}): Promise<void> {
-  const selectedModes = [options.wide, options.csv, options.md, options.json].filter(Boolean);
-  if (selectedModes.length > 1) {
-    throw new Error("Choose only one output mode: --wide, --csv, --md, or --json.");
+export async function listCommand(cwd: string, options: ListOptions = {}): Promise<{ warnings: string[]; outputPath?: string }> {
+  const result = await listRuns(cwd);
+  const format = options.format ?? "compact";
+  const contents = format === "wide" ? formatWideRunList(result.runs)
+    : format === "json" ? formatRunJson(result.runs)
+      : format === "csv" ? formatRunCsv(result.runs)
+        : format === "markdown" ? formatRunMarkdown(result.runs)
+          : `${formatCompactRunList(result.runs)}\n`;
+  let outputPath: string | undefined;
+  if (options.output) outputPath = await writeRunOutput(cwd, options.output, contents);
+  process.stdout.write(contents.endsWith("\n") ? contents : `${contents}\n`);
+  if (!options.quiet) {
+    for (const warning of result.warnings) process.stderr.write(`Warning: ${warning}\n`);
+    if (outputPath) process.stderr.write(`Output written: ${outputPath}\n`);
   }
-
-  const runs = await listRuns(cwd);
-
-  if (options.csv) {
-    console.log(`CSV written: ${displayPath(cwd, await writeRunCsv(cwd, runs))}`);
-  } else if (options.md) {
-    console.log(`Markdown written: ${displayPath(cwd, await writeRunMarkdown(cwd, runs))}`);
-  } else if (options.json) {
-    console.log(`JSON written: ${displayPath(cwd, await writeRunJson(cwd, runs))}`);
-  } else {
-    console.log(options.wide ? formatWideRunList(runs) : formatCompactRunList(runs));
-  }
+  return { warnings: result.warnings, ...(outputPath ? { outputPath } : {}) };
 }

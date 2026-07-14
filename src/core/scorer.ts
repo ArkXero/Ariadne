@@ -1,139 +1,60 @@
-import { matchesFilePattern } from "./path-match.js";
-import { findForbiddenCommandMatches } from "./forbidden-commands.js";
-import type { AriadneConfig, CommandExecution, CommandScore, ScoreCheck, TaskRunResult, TaskScoreStatus } from "../types/index.js";
+import { findForbiddenObservedCommandMatches } from "./forbidden-commands.js";
+import type { AriadneConfig, PolicyResult, RepositoryTrace, ScoreBreakdown } from "../types/index.js";
 
-function failedCheck(name: string, message: string, details?: Record<string, unknown>): ScoreCheck {
-  return { name, passed: false, message, details };
-}
+const PENALTIES: Record<PolicyResult["ruleId"], number> = {
+  "files.forbidden": 40,
+  "commands.forbidden": 30,
+  "changes.max-files": 15,
+  "changes.max-diff-lines": 15
+};
 
-function passedCheck(name: string, message: string, details?: Record<string, unknown>): ScoreCheck {
-  return { name, passed: true, message, details };
-}
-
-function scoreCommand(command: CommandExecution): CommandScore {
-  return {
-    command: command.command,
-    passed: command.exitCode === 0 && !command.timedOut,
-    exitCode: command.exitCode,
-    timedOut: command.timedOut,
-    runtimeMs: command.runtimeMs
-  };
-}
-
-export function scoreTaskRun(result: Omit<TaskRunResult, "score">, config: AriadneConfig): TaskRunResult["score"] {
-  const checks: ScoreCheck[] = [];
-  const agentScore = scoreCommand(result.agent);
-  const agentPassed = agentScore.passed;
-
-  checks.push(
-    agentPassed
-      ? passedCheck("agent_exit_code", "Agent command exited with code 0.")
-      : failedCheck(
-        "agent_exit_code",
-        result.agent.timedOut
-          ? `Agent command timed out after ${result.agent.runtimeMs}ms.`
-          : `Agent command exited with code ${result.agent.exitCode}.`
-      )
-  );
-
-  const verificationCommands = result.verification.map((commandResult) => scoreCommand(commandResult));
-  const failedVerification = verificationCommands.filter((commandResult) => !commandResult.passed);
-  checks.push(
-    failedVerification.length === 0
-      ? passedCheck("verification", "All verification commands passed.", { commands: verificationCommands.map((item) => item.command) })
-      : failedCheck("verification", "One or more verification commands failed.", {
-        failedCommands: failedVerification.map((item) => ({
-          command: item.command,
-          exitCode: item.exitCode,
-          timedOut: item.timedOut
-        }))
-      })
-  );
-
-  const forbiddenFilesFromGit = result.trace.changedFiles.filter((filePath) => {
-    return config.checks.forbidden_files.some((pattern) => matchesFilePattern(filePath, pattern));
-  });
-  const forbiddenFiles = [...new Set([
-    ...forbiddenFilesFromGit,
-    ...result.trace.forbiddenFileChanges
-  ])].sort();
-
-  checks.push(
-    forbiddenFiles.length === 0
-      ? passedCheck("forbidden_files", "No forbidden files were modified.", { patterns: config.checks.forbidden_files })
-      : failedCheck("forbidden_files", "Forbidden files were modified.", { files: forbiddenFiles })
-  );
-
-  if (config.checks.max_changed_files !== undefined) {
-    const changedCount = result.trace.changedFiles.length;
-    checks.push(
-      changedCount <= config.checks.max_changed_files
-        ? passedCheck("max_changed_files", "Changed file count is within limit.", {
-          count: changedCount,
-          limit: config.checks.max_changed_files
-        })
-        : failedCheck("max_changed_files", "Changed file count exceeds limit.", {
-          count: changedCount,
-          limit: config.checks.max_changed_files
-        })
-    );
+export function evaluatePolicies(trace: RepositoryTrace | undefined, config: AriadneConfig): PolicyResult[] {
+  if (!trace) {
+    return (Object.keys(PENALTIES) as PolicyResult["ruleId"][]).map((ruleId) => ({
+      ruleId,
+      outcome: "not-applicable",
+      penalty: 0,
+      summary: "Policy could not be evaluated because repository trace is unavailable.",
+      evidence: {}
+    }));
   }
 
-  if (config.checks.max_diff_lines !== undefined) {
-    checks.push(
-      result.trace.diffLineCount <= config.checks.max_diff_lines
-        ? passedCheck("max_diff_lines", "Diff line count is within limit.", {
-          count: result.trace.diffLineCount,
-          limit: config.checks.max_diff_lines
-        })
-        : failedCheck("max_diff_lines", "Diff line count exceeds limit.", {
-          count: result.trace.diffLineCount,
-          limit: config.checks.max_diff_lines
-        })
-    );
-  }
+  const filePolicy: PolicyResult = config.checks.forbidden_files.length === 0
+    ? { ruleId: "files.forbidden", outcome: "not-applicable", penalty: 0, summary: "No forbidden file patterns configured.", evidence: {} }
+    : trace.forbiddenFileChanges.length > 0
+      ? { ruleId: "files.forbidden", outcome: "fail", penalty: PENALTIES["files.forbidden"], summary: "Forbidden files changed.", evidence: { changes: trace.forbiddenFileChanges } }
+      : { ruleId: "files.forbidden", outcome: "pass", penalty: 0, summary: "No forbidden files changed.", evidence: { patterns: config.checks.forbidden_files } };
 
-  const observedCommands = [
-    result.agent.command,
-    ...result.verification.flatMap((commandResult) => [
-      commandResult.command,
-    ]),
-    ...result.trace.commandsObserved
-  ];
-  const forbiddenCommandMatches = findForbiddenCommandMatches(config.checks.forbidden_commands, observedCommands);
-  checks.push(
-    forbiddenCommandMatches.length === 0
-      ? passedCheck("forbidden_commands", "No forbidden command rules matched observed commands.", {
-        rules: config.checks.forbidden_commands
-      })
-      : failedCheck("forbidden_commands", "Forbidden command rules matched observed commands.", {
-        matches: forbiddenCommandMatches
-      })
-  );
+  const commandMatches = findForbiddenObservedCommandMatches(config.checks.forbidden_commands, trace.observedCommands);
+  const executedMatches = commandMatches.filter((match) => match.confidence === "executed" || match.confidence === "blocked");
+  const reportedMatches = commandMatches.filter((match) => match.confidence === "reported");
+  const commandPolicy: PolicyResult = config.checks.forbidden_commands.length === 0
+    ? { ruleId: "commands.forbidden", outcome: "not-applicable", penalty: 0, summary: "No forbidden command rules configured.", evidence: {} }
+    : executedMatches.length > 0
+      ? { ruleId: "commands.forbidden", outcome: "fail", penalty: PENALTIES["commands.forbidden"], summary: "A directly launched command matched a forbidden rule.", evidence: { matches: executedMatches, reportedMatches } }
+      : reportedMatches.length > 0
+        ? { ruleId: "commands.forbidden", outcome: "warning", penalty: 0, summary: "Agent output reported a forbidden command, but output is not proof of execution.", evidence: { reportedMatches } }
+        : { ruleId: "commands.forbidden", outcome: "pass", penalty: 0, summary: "No observable command matched a forbidden rule.", evidence: { rules: config.checks.forbidden_commands } };
 
-  const passed = checks.every((check) => check.passed);
-  const checkFailures = checks.filter((check) => !check.passed && check.name !== "agent_exit_code" && check.name !== "verification");
-  const hasTimeout = result.agent.timedOut || result.verification.some((commandResult) => commandResult.timedOut);
-  let status: TaskScoreStatus = "passed";
-  if (hasTimeout) {
-    status = "timeout";
-  } else if (!agentPassed) {
-    status = "agent_failed";
-  } else if (failedVerification.length > 0) {
-    status = "verification_failed";
-  } else if (checkFailures.length > 0) {
-    status = "check_failed";
-  }
+  const changedFilesPolicy: PolicyResult = config.checks.max_changed_files === undefined
+    ? { ruleId: "changes.max-files", outcome: "not-applicable", penalty: 0, summary: "No changed-file limit configured.", evidence: {} }
+    : trace.taskChanges.length > config.checks.max_changed_files
+      ? { ruleId: "changes.max-files", outcome: "fail", penalty: PENALTIES["changes.max-files"], summary: "Task-caused changed-file count exceeds the configured limit.", evidence: { count: trace.taskChanges.length, limit: config.checks.max_changed_files, files: trace.taskChanges.map((change) => change.path) } }
+      : { ruleId: "changes.max-files", outcome: "pass", penalty: 0, summary: "Task-caused changed-file count is within the configured limit.", evidence: { count: trace.taskChanges.length, limit: config.checks.max_changed_files } };
 
-  return {
-    passed,
-    status,
-    agent: agentScore,
-    verification: {
-      passed: failedVerification.length === 0,
-      commands: verificationCommands,
-      failedCommands: failedVerification
-    },
-    checks
-  };
+  const diffPolicy: PolicyResult = config.checks.max_diff_lines === undefined
+    ? { ruleId: "changes.max-diff-lines", outcome: "not-applicable", penalty: 0, summary: "No diff-line limit configured.", evidence: {} }
+    : trace.diffLineCount > config.checks.max_diff_lines
+      ? { ruleId: "changes.max-diff-lines", outcome: "fail", penalty: PENALTIES["changes.max-diff-lines"], summary: "Task-caused diff line count exceeds the configured limit.", evidence: { count: trace.diffLineCount, limit: config.checks.max_diff_lines } }
+      : { ruleId: "changes.max-diff-lines", outcome: "pass", penalty: 0, summary: "Task-caused diff line count is within the configured limit.", evidence: { count: trace.diffLineCount, limit: config.checks.max_diff_lines } };
+
+  return [filePolicy, commandPolicy, changedFilesPolicy, diffPolicy];
+}
+
+export function scorePolicies(policies: PolicyResult[]): ScoreBreakdown {
+  const deductions = [...new Map(
+    policies.filter((policy) => policy.outcome === "fail" && policy.penalty > 0).map((policy) => [policy.ruleId, { ruleId: policy.ruleId, penalty: policy.penalty }])
+  ).values()].sort((left, right) => left.ruleId.localeCompare(right.ruleId));
+  const value = Math.max(0, Math.min(100, 100 - deductions.reduce((total, deduction) => total + deduction.penalty, 0)));
+  return { value, minimum: 0, maximum: 100, basis: "policy", deductions };
 }

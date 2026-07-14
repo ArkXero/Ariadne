@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { RunRecordSchema } from "./run-record.js";
-
-export const CURRENT_RUN_SCHEMA_VERSION = 1;
+import { CURRENT_RUN_SCHEMA_VERSION } from "../types/index.js";
 
 export const ReportSchema = z.object({
   run: RunRecordSchema,
@@ -9,4 +8,5 @@ export const ReportSchema = z.object({
   outputPath: z.string().min(1).optional()
 }).strict();
 
+export { CURRENT_RUN_SCHEMA_VERSION };
 export type ReportRecord = z.infer<typeof ReportSchema>;

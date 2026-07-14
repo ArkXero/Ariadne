@@ -1,6 +1,6 @@
 # Task Isolation
 
-Ariadne currently runs tasks serially in the configured working tree. That is simple and transparent, but it means tasks can affect later tasks unless users clean or isolate the workspace themselves.
+Ariadne runs tasks serially in the canonical invocation working tree. Every task receives a fresh repository baseline and failures are attributed independently, but filesystem mutations remain in place and can affect later tasks.
 
 ## Same Working Tree
 
@@ -16,7 +16,7 @@ Cons:
 - tasks can contaminate later tasks;
 - generated files can accumulate;
 - parallel mutation would be unsafe;
-- failures can be harder to attribute when previous tasks changed the same files.
+- later tasks can observe files left by earlier tasks, even though attribution begins from a new baseline.
 
 Failure modes:
 
@@ -69,12 +69,12 @@ Failure modes:
 
 ## Recommendation
 
-For Ariadne MVP+, keep same-working-tree execution as the default and document its limits. Add explicit isolation modes before enabling mutating parallel execution.
+For the reliability foundation, same-working-tree serial execution remains the only mode. The safe dogfooding examples create a separate temporary repository per scenario. Add explicit isolation modes before enabling parallel mutation.
 
 Phased plan:
 
 1. Add `--isolation same-worktree` as an explicit name for current behavior.
-2. Add `--isolation copy` using a temporary directory, with conservative ignore rules and full trace paths.
-3. Add `--isolation git-worktree` for git repositories.
-4. Add serial execution tests for each isolation mode.
-5. Add limited concurrency only for isolated modes, never for shared same-working-tree mutation.
+2. Add `--isolation copy` with conservative copy rules, canonical roots, and cleanup ownership.
+3. Add `--isolation git-worktree` with crash reconciliation.
+4. Test dirty, untracked, ignored, symlink, submodule, and interruption behavior for each mode.
+5. Permit concurrency only for independently isolated workspaces.

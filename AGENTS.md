@@ -45,9 +45,11 @@ For developer-preview global installation:
 ```sh
 pnpm install
 pnpm build
-pnpm link --global
+pnpm link
 ariadne --help
 ```
+
+pnpm 11 removed global linking; when testing under pnpm 11, use `pnpm add --global .` instead.
 
 For local smoke tests after `pnpm build`:
 
@@ -60,7 +62,7 @@ node dist/cli.js report
 
 Prefer running smoke tests in a temporary git repo so generated `.ariadne/` files do not pollute this repository.
 
-`pnpm smoke` verifies global linking with an isolated temporary `PNPM_HOME` and removes it afterward, leaving the host global pnpm installation untouched.
+`pnpm smoke` verifies global binary installation from a disposable staged package with an isolated temporary `PNPM_HOME` and removes it afterward, leaving both the checkout and host global pnpm installation untouched.
 
 ## Repository map
 

@@ -15,10 +15,12 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "check": "pnpm lint && pnpm build && pnpm test && pnpm smoke",
+    "clean": "node scripts/clean.mjs",
+    "build": "pnpm clean && tsc -p tsconfig.json",
+    "check": "pnpm lint && pnpm build && pnpm test && pnpm smoke && pnpm test:package",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:package": "node scripts/package-smoke.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "pnpm build && node dist/cli.js",

@@ -1,7 +1,10 @@
-version: 1
+version: 2
 
 agent:
-  command: "node agent.mjs"
+  command:
+    kind: exec
+    file: node
+    args: [agent.mjs]
   timeout_ms: 600000
 
 tasks:
@@ -9,8 +12,13 @@ tasks:
 
 verification:
   commands:
-    - "node verify.mjs"
+    - kind: exec
+      file: node
+      args: [verify.mjs]
   timeout_ms: 300000
+
+execution:
+  termination_grace_ms: 2000
 
 checks:
   forbidden_files:

@@ -1,16 +1,21 @@
 import path from "node:path";
 import { constants } from "node:fs";
 import fs from "fs-extra";
-import { loadConfig } from "./config.js";
+import { actualCommand } from "./command-utils.js";
+import { renderProcessSpec, loadConfig } from "./config.js";
+import { formatAriadneError, AriadneError } from "./errors.js";
+import { captureRepositorySnapshot } from "./git.js";
 import { loadTasks } from "./task-loader.js";
+import type { ProcessSpec } from "../types/index.js";
 
-export type DoctorCheckLevel = "pass" | "warning" | "error";
+export type DoctorCheckStatus = "pass" | "warning" | "fail";
 
 export interface DoctorCheck {
-  name: string;
-  level: DoctorCheckLevel;
+  id: string;
+  status: DoctorCheckStatus;
   message: string;
-  suggestion?: string;
+  remediation?: string;
+  resolvedPath?: string;
 }
 
 export interface DoctorReport {
@@ -20,214 +25,146 @@ export interface DoctorReport {
   warnings: number;
 }
 
-const PACKAGE_MANAGER_COMMANDS = new Set(["npm", "pnpm", "yarn", "bun"]);
-const PNPM_BUILT_INS = new Set([
-  "add", "audit", "config", "create", "deploy", "dlx", "exec", "fetch", "import",
-  "init", "install", "link", "list", "outdated", "pack", "patch", "prune", "publish",
-  "rebuild", "remove", "root", "setup", "store", "unlink", "update", "why"
-]);
-const YARN_BUILT_INS = new Set([
-  "add", "bin", "cache", "config", "create", "dlx", "exec", "help", "import", "info",
-  "init", "install", "link", "node", "npm", "pack", "plugin", "remove", "set", "unlink",
-  "up", "why", "workspace", "workspaces"
-]);
-
-function check(name: string, level: DoctorCheckLevel, message: string, suggestion?: string): DoctorCheck {
-  return { name, level, message, suggestion };
-}
-
-function tokenize(command: string): string[] {
-  return (command.match(/(?:[^\s"'\\]+|\\.|"(?:\\.|[^"])*"|'[^']*')+/g) ?? [])
-    .map((token) => token.replace(/^(['"])(.*)\1$/, "$2"));
-}
-
-function executableFromCommand(command: string): string | undefined {
-  const tokens = tokenize(command);
-  let index = 0;
-
-  while (tokens[index]?.includes("=") && !tokens[index]?.startsWith("=")) {
-    index += 1;
-  }
-
-  if (tokens[index] === "env") {
-    index += 1;
-    while (tokens[index]?.includes("=") && !tokens[index]?.startsWith("=")) {
-      index += 1;
-    }
-  }
-
-  return tokens[index];
+function check(id: string, status: DoctorCheckStatus, message: string, remediation?: string, resolvedPath?: string): DoctorCheck {
+  return { id, status, message, ...(remediation ? { remediation } : {}), ...(resolvedPath ? { resolvedPath } : {}) };
 }
 
 async function executableExists(cwd: string, executable: string): Promise<boolean> {
   if (executable.includes("/") || executable.includes("\\")) {
-    const resolved = path.resolve(cwd, executable);
+    const resolved = path.isAbsolute(executable) ? executable : path.resolve(cwd, executable);
     return fs.access(resolved, constants.X_OK).then(() => true, () => false);
   }
-
-  const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
-  const extensions = process.platform === "win32"
-    ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";")
-    : [""];
-
-  for (const entry of pathEntries) {
+  const extensions = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
     for (const extension of extensions) {
-      const candidate = path.join(entry, `${executable}${extension}`);
-      if (await fs.access(candidate, constants.X_OK).then(() => true, () => false)) {
-        return true;
-      }
+      if (await fs.access(path.join(directory, `${executable}${extension}`), constants.X_OK).then(() => true, () => false)) return true;
     }
   }
-
   return false;
 }
 
-function packageScriptFromCommand(command: string): { manager: string; script: string } | undefined {
-  const tokens = tokenize(command);
-  const managerIndex = tokens.findIndex((token) => PACKAGE_MANAGER_COMMANDS.has(path.basename(token)));
-  if (managerIndex === -1) {
-    return undefined;
-  }
-
-  const manager = path.basename(tokens[managerIndex]);
-  const args = tokens.slice(managerIndex + 1);
-  if (args[0] === "run" && args[1] && !args[1].startsWith("-")) {
-    return { manager, script: args[1] };
-  }
-
-  if (manager === "pnpm" && args[0] && !args[0].startsWith("-") && !PNPM_BUILT_INS.has(args[0])) {
-    return { manager, script: args[0] };
-  }
-
-  if (manager === "yarn" && args[0] && !args[0].startsWith("-") && !YARN_BUILT_INS.has(args[0])) {
-    return { manager, script: args[0] };
-  }
-
-  return undefined;
+async function commandCheck(cwd: string, id: string, spec: ProcessSpec): Promise<DoctorCheck> {
+  const executable = actualCommand(spec).file;
+  const display = renderProcessSpec(spec);
+  return await executableExists(cwd, executable)
+    ? check(id, "pass", `Executable "${executable}" is available for ${display}.`)
+    : check(id, "fail", `Executable "${executable}" was not found or is not runnable.`, `Install ${executable} or update the process spec.`);
 }
 
-async function readPackageScripts(cwd: string): Promise<Record<string, unknown> | undefined> {
+function packageScriptReference(spec: ProcessSpec): { manager: string; script: string } | undefined {
+  let tokens: string[];
+  if (spec.kind === "exec") {
+    tokens = [path.basename(spec.file).replace(/\.(?:cmd|exe)$/i, ""), ...spec.args];
+  } else {
+    const match = spec.command.trim().match(/^(?:env\s+\S+\s+)*(pnpm|npm|yarn|bun)\s+(.+)$/);
+    if (!match) return undefined;
+    tokens = [match[1], ...match[2].trim().split(/\s+/)];
+  }
+  const manager = tokens[0].toLowerCase();
+  if (!["pnpm", "npm", "yarn", "bun"].includes(manager)) return undefined;
+  const args = tokens.slice(1).filter((value) => !value.startsWith("--"));
+  const candidate = args[0] === "run" ? args[1] : args[0];
+  const builtins = new Set(["add", "audit", "ci", "config", "dlx", "exec", "install", "link", "pack", "publish", "remove", "uninstall", "version"]);
+  if (!candidate || builtins.has(candidate)) return undefined;
+  return { manager, script: candidate };
+}
+
+async function scriptCheck(cwd: string, id: string, spec: ProcessSpec): Promise<DoctorCheck | undefined> {
+  const reference = packageScriptReference(spec);
+  if (!reference) return undefined;
   const packagePath = path.join(cwd, "package.json");
   if (!(await fs.pathExists(packagePath))) {
-    return undefined;
+    return check(id, "fail", `${reference.manager} script "${reference.script}" requires package.json.`, "Create package.json or update the command.", packagePath);
   }
-
-  const packageJson = await fs.readJson(packagePath) as { scripts?: unknown };
-  return packageJson.scripts && typeof packageJson.scripts === "object"
-    ? packageJson.scripts as Record<string, unknown>
-    : {};
-}
-
-async function commandChecks(
-  cwd: string,
-  name: string,
-  command: string,
-  packageScripts: Record<string, unknown> | undefined
-): Promise<DoctorCheck[]> {
-  const executable = executableFromCommand(command);
-  if (!executable) {
-    return [check(name, "error", `Could not identify executable in "${command}".`, "Use a command beginning with an executable available on PATH.")];
+  try {
+    const manifest = await fs.readJson(packagePath) as { scripts?: Record<string, unknown> };
+    return typeof manifest.scripts?.[reference.script] === "string"
+      ? check(id, "pass", `Package script "${reference.script}" is defined.`, undefined, packagePath)
+      : check(id, "fail", `Package script "${reference.script}" is not defined.`, `Add scripts.${reference.script} or update the command.`, packagePath);
+  } catch (error) {
+    return check(id, "fail", `Could not read package.json: ${error instanceof Error ? error.message : String(error)}`, "Fix package.json syntax.", packagePath);
   }
-
-  const checks = await executableExists(cwd, executable)
-    ? [check(name, "pass", `Executable "${executable}" is available.`)]
-    : [check(name, "error", `Executable "${executable}" was not found or is not runnable.`, `Install ${executable} or update command "${command}".`)];
-  const packageScript = packageScriptFromCommand(command);
-
-  if (packageScript) {
-    if (!packageScripts) {
-      checks.push(check(
-        `${name} script`,
-        "error",
-        `Cannot verify "${packageScript.script}" because package.json is missing.`,
-        `Add package.json with scripts.${packageScript.script}, or update command "${command}".`
-      ));
-    } else if (!(packageScript.script in packageScripts)) {
-      checks.push(check(
-        `${name} script`,
-        "error",
-        `${packageScript.manager} script "${packageScript.script}" is missing from package.json.`,
-        `Add "${packageScript.script}" to package.json scripts, or update command "${command}".`
-      ));
-    } else {
-      checks.push(check(`${name} script`, "pass", `package.json script "${packageScript.script}" exists.`));
-    }
-  }
-
-  return checks;
 }
 
 function buildReport(checks: DoctorCheck[]): DoctorReport {
-  const errors = checks.filter((item) => item.level === "error").length;
-  const warnings = checks.filter((item) => item.level === "warning").length;
-  return {
-    checks,
-    passed: errors === 0,
-    errors,
-    warnings
-  };
+  const errors = checks.filter((item) => item.status === "fail").length;
+  const warnings = checks.filter((item) => item.status === "warning").length;
+  return { checks, passed: errors === 0, errors, warnings };
 }
 
-export async function diagnoseRepository(cwd: string, configPath = "ariadne.yml"): Promise<DoctorReport> {
-  const checks: DoctorCheck[] = [];
-  let loadedConfig: Awaited<ReturnType<typeof loadConfig>>;
+async function nearestExistingAncestor(candidate: string): Promise<string> {
+  let current = candidate;
+  while (!(await fs.pathExists(current))) {
+    const parent = path.dirname(current);
+    if (parent === current) return current;
+    current = parent;
+  }
+  return current;
+}
 
+export async function diagnoseRepository(cwd: string, configPath = "ariadne.yml", verbose = false): Promise<DoctorReport> {
+  const checks: DoctorCheck[] = [];
+  checks.push(
+    Number(process.versions.node.split(".")[0]) >= 20
+      ? check("runtime.node", "pass", `Node ${process.version} satisfies the >=20 requirement.`)
+      : check("runtime.node", "fail", `Node ${process.version} is unsupported.`, "Install Node.js 20 or newer.")
+  );
+
+  let loaded: Awaited<ReturnType<typeof loadConfig>>;
   try {
-    loadedConfig = await loadConfig(cwd, configPath);
-    checks.push(check("config", "pass", `Config parsed: ${path.relative(cwd, loadedConfig.path) || loadedConfig.path}`));
+    loaded = await loadConfig(cwd, configPath);
+    checks.push(check("config.load", "pass", `Configuration version ${loaded.config.sourceVersion} loaded and normalized to v2.`, undefined, loaded.path));
+    for (const warning of loaded.warnings) checks.push(check("config.compatibility", "warning", warning, "Migrate the configuration to version 2."));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    checks.push(check("config", "error", message, `Fix ${configPath}, then run "ariadne doctor" again.`));
+    const message = error instanceof AriadneError ? formatAriadneError(error, verbose) : error instanceof Error ? verbose && error.stack ? error.stack : error.message : String(error);
+    checks.push(check("config.load", "fail", message, "Fix the configuration and run doctor again."));
     return buildReport(checks);
   }
 
   try {
-    const tasks = await loadTasks(cwd, loadedConfig.config.tasks.directory);
-    checks.push(check("tasks", "pass", `Loaded ${tasks.length} valid task file${tasks.length === 1 ? "" : "s"} from ${loadedConfig.config.tasks.directory}.`));
+    const tasks = await loadTasks(loaded.projectRoot, loaded.config.tasks.directory);
+    checks.push(check("tasks.load", "pass", `Loaded ${tasks.length} unique valid task${tasks.length === 1 ? "" : "s"}.`, undefined, path.resolve(loaded.projectRoot, loaded.config.tasks.directory)));
+    checks.push(check("tasks.duplicates", "pass", "Task IDs are unique when compared case-insensitively."));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    checks.push(check("tasks", "error", message, "Create or fix task YAML files before running Ariadne."));
+    checks.push(check(error instanceof AriadneError && error.code === "TASK_ID_DUPLICATE" ? "tasks.duplicates" : "tasks.load", "fail", error instanceof Error ? error.message : String(error), "Create or fix task YAML files."));
   }
 
-  let packageScripts: Record<string, unknown> | undefined;
-  try {
-    packageScripts = await readPackageScripts(cwd);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    checks.push(check("package.json", "warning", `Could not parse package.json: ${message}`, "Fix package.json so verification scripts can be checked."));
+  checks.push(await commandCheck(loaded.projectRoot, "agent.executable", loaded.config.agent.command));
+  const agentScript = await scriptCheck(loaded.projectRoot, "agent.script", loaded.config.agent.command);
+  if (agentScript) checks.push(agentScript);
+  for (const [index, command] of loaded.config.verification.commands.entries()) {
+    checks.push(await commandCheck(loaded.projectRoot, `verification.${index + 1}.executable`, command));
+    const verificationScript = await scriptCheck(loaded.projectRoot, `verification.${index + 1}.script`, command);
+    if (verificationScript) checks.push(verificationScript);
+  }
+  if (loaded.config.verification.commands.length === 0) {
+    checks.push(check("verification.configured", "warning", "No verification commands configured.", "Add at least one deterministic verification command."));
   }
 
-  checks.push(...await commandChecks(cwd, "agent", loadedConfig.config.agent.command, packageScripts));
+  const repository = await captureRepositorySnapshot(loaded.projectRoot);
+  const requiresGit = loaded.config.checks.max_changed_files !== undefined || loaded.config.checks.max_diff_lines !== undefined;
+  checks.push(repository.available
+    ? check("repository.git", "pass", `Git repository is available${repository.branch ? ` on branch ${repository.branch}` : " in detached state"}.`)
+    : check("repository.git", requiresGit ? "fail" : "warning", repository.unavailableReason ?? "Git state is unavailable.", requiresGit ? "Initialize Git or remove Git-dependent limits." : "Initialize Git for changed-file and diff attribution."));
 
-  if (loadedConfig.config.verification.commands.length === 0) {
-    checks.push(check(
-      "verification",
-      "warning",
-      "No verification commands configured.",
-      "Add verification.commands so Ariadne can validate agent work."
-    ));
-  } else {
-    for (const [index, command] of loadedConfig.config.verification.commands.entries()) {
-      checks.push(...await commandChecks(cwd, `verification ${index + 1}`, command, packageScripts));
-    }
-  }
+  const runsDirectory = path.join(loaded.projectRoot, ".ariadne", "runs");
+  const writableTarget = await nearestExistingAncestor(runsDirectory);
+  const writable = await fs.access(writableTarget, constants.W_OK).then(() => true, () => false);
+  checks.push(writable
+    ? check("runs.writable", "pass", "Run storage can be created from a writable existing ancestor.", undefined, runsDirectory)
+    : check("runs.writable", "fail", `Run storage cannot be created because ${writableTarget} is not writable.`, "Fix directory ownership or permissions.", runsDirectory));
 
   return buildReport(checks);
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
+  const labels: Record<DoctorCheckStatus, string> = { pass: "PASS", warning: "WARN", fail: "FAIL" };
   const lines = ["Ariadne doctor", ""];
-
   for (const item of report.checks) {
-    lines.push(`${item.level.toUpperCase()} ${item.name}: ${item.message}`);
-    if (item.suggestion) {
-      lines.push(`  Suggestion: ${item.suggestion}`);
-    }
+    lines.push(`${labels[item.status]} ${item.id}: ${item.message}`);
+    if (item.resolvedPath) lines.push(`  Path: ${item.resolvedPath}`);
+    if (item.remediation) lines.push(`  Remediation: ${item.remediation}`);
   }
-
-  const passed = report.checks.length - report.errors - report.warnings;
-  const warningLabel = report.warnings === 1 ? "warning" : "warnings";
-  const errorLabel = report.errors === 1 ? "error" : "errors";
-  lines.push("", `Summary: ${passed} passed, ${report.warnings} ${warningLabel}, ${report.errors} ${errorLabel}`);
+  lines.push("", `Summary: ${report.checks.length - report.errors - report.warnings} passed, ${report.warnings} warnings, ${report.errors} failures`);
   return lines.join("\n");
 }

@@ -1,72 +1,112 @@
 import { z } from "zod";
 import { TraceSchema } from "./trace.js";
+import { CURRENT_RUN_SCHEMA_VERSION } from "../types/index.js";
 
-export const CURRENT_RUN_SCHEMA_VERSION = 1;
-
-export const AriadneTaskSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  file: z.string().min(1),
-  prompt: z.string().min(1),
-  metadata: z.record(z.string(), z.unknown()).optional()
-}).strict();
-
-export const CommandExecutionSchema = z.object({
-  command: z.string().min(1),
-  exitCode: z.number().int(),
-  stdout: z.string(),
-  stderr: z.string(),
-  runtimeMs: z.number().int().nonnegative(),
-  startedAt: z.string().datetime(),
-  completedAt: z.string().datetime(),
-  timedOut: z.boolean()
-}).strict();
-
-export const TaskScoreStatusSchema = z.enum([
-  "passed",
-  "agent_failed",
-  "verification_failed",
-  "check_failed",
-  "timeout"
+const LifecycleStageSchema = z.enum([
+  "created", "loading", "validated", "preparing", "agent_running", "agent_finished",
+  "verifying", "collecting_trace", "evaluating_policy", "scoring", "persisting", "completed"
 ]);
 
-export const CommandScoreSchema = z.object({
-  command: z.string().min(1),
-  passed: z.boolean(),
-  exitCode: z.number().int(),
+const LifecycleEventSchema = z.object({
+  stage: LifecycleStageSchema,
+  at: z.string().datetime(),
+  taskId: z.string().optional(),
+  detail: z.string().optional()
+}).strict();
+
+const OutputPreviewSchema = z.object({
+  head: z.string(),
+  tail: z.string(),
+  bytes: z.number().int().nonnegative(),
+  encoding: z.literal("utf8-replacement"),
+  hadDecodingReplacement: z.boolean()
+}).strict();
+
+export const ProcessResultSchema = z.object({
+  kind: z.enum(["exec", "shell"]),
+  executable: z.string(),
+  args: z.array(z.string()),
+  displayCommand: z.string(),
+  cwd: z.string(),
+  providedEnvironmentKeys: z.array(z.string()),
+  startedAt: z.string().datetime(),
+  completedAt: z.string().datetime(),
+  durationMs: z.number().int().nonnegative(),
+  exitCode: z.number().int().nullable(),
+  signal: z.string().nullable(),
   timedOut: z.boolean(),
-  runtimeMs: z.number().int().nonnegative()
-}).strict();
-
-export const ScoreCheckSchema = z.object({
-  name: z.string().min(1),
-  passed: z.boolean(),
-  message: z.string().min(1),
-  details: z.record(z.string(), z.unknown()).optional()
-}).strict();
-
-export const VerificationScoreSchema = z.object({
-  passed: z.boolean(),
-  commands: z.array(CommandScoreSchema),
-  failedCommands: z.array(CommandScoreSchema)
-}).strict();
-
-export const TaskRunResultSchema = z.object({
-  task: AriadneTaskSchema,
-  durationMs: z.number().int().nonnegative().optional(),
-  agent: CommandExecutionSchema,
-  verification: z.array(CommandExecutionSchema),
-  trace: TraceSchema,
-  score: z.object({
-    passed: z.boolean(),
-    status: TaskScoreStatusSchema,
-    agent: CommandScoreSchema,
-    verification: VerificationScoreSchema,
-    checks: z.array(ScoreCheckSchema)
+  interrupted: z.boolean(),
+  spawnError: z.string().optional(),
+  stdoutArtifact: z.string(),
+  stderrArtifact: z.string(),
+  stdoutPreview: OutputPreviewSchema,
+  stderrPreview: OutputPreviewSchema,
+  cleanup: z.object({
+    attempted: z.boolean(),
+    limitation: z.string().optional(),
+    gracefulSignal: z.string().optional(),
+    forceSignal: z.string().optional(),
+    gracefulSucceeded: z.boolean().optional(),
+    forceSucceeded: z.boolean().optional(),
+    error: z.string().optional()
   }).strict()
 }).strict();
 
-export type AriadneTaskRecord = z.infer<typeof AriadneTaskSchema>;
-export type CommandExecutionRecord = z.infer<typeof CommandExecutionSchema>;
+const PolicyResultSchema = z.object({
+  ruleId: z.enum(["files.forbidden", "commands.forbidden", "changes.max-files", "changes.max-diff-lines"]),
+  outcome: z.enum(["pass", "fail", "warning", "not-applicable"]),
+  penalty: z.number().nonnegative(),
+  summary: z.string(),
+  evidence: z.record(z.string(), z.unknown())
+}).strict();
+
+const FailureSchema = z.object({
+  category: z.enum([
+    "configuration", "task_loading", "task_selection", "repository_validation", "agent_spawn",
+    "agent_nonzero", "agent_timeout", "verification_spawn", "verification_nonzero", "trace_collection",
+    "policy_violation", "persistence", "user_interruption", "internal"
+  ]),
+  code: z.string(),
+  stage: LifecycleStageSchema,
+  message: z.string(),
+  source: z.string().optional(),
+  taskId: z.string().optional(),
+  details: z.record(z.string(), z.unknown()).optional()
+}).strict();
+
+export const TaskRunResultSchema = z.object({
+  task: z.object({
+    id: z.string(),
+    name: z.string(),
+    file: z.string(),
+    promptSha256: z.string(),
+    promptLength: z.number().int().nonnegative(),
+    metadata: z.record(z.string(), z.unknown()).optional()
+  }).strict(),
+  status: z.enum(["running", "passed", "failed", "interrupted", "incomplete"]),
+  outcome: z.enum(["passed", "agent_failed", "verification_failed", "policy_failed", "timeout", "interrupted", "internal_failed"]),
+  startedAt: z.string().datetime(),
+  completedAt: z.string().datetime(),
+  durationMs: z.number().int().nonnegative(),
+  lifecycle: z.array(LifecycleEventSchema),
+  agent: ProcessResultSchema.optional(),
+  verification: z.array(z.object({
+    displayCommand: z.string(),
+    command: ProcessResultSchema.optional(),
+    status: z.enum(["passed", "failed", "skipped"]),
+    skipReason: z.string().optional()
+  }).strict()),
+  trace: TraceSchema.optional(),
+  policies: z.array(PolicyResultSchema),
+  score: z.object({
+    value: z.number().min(0).max(100),
+    minimum: z.literal(0),
+    maximum: z.literal(100),
+    basis: z.literal("policy"),
+    deductions: z.array(z.object({ ruleId: PolicyResultSchema.shape.ruleId, penalty: z.number().nonnegative() }).strict())
+  }).strict(),
+  failures: z.array(FailureSchema)
+}).strict();
+
+export { CURRENT_RUN_SCHEMA_VERSION, LifecycleEventSchema, FailureSchema, PolicyResultSchema };
 export type TaskRunResultRecord = z.infer<typeof TaskRunResultSchema>;
-export type TaskScoreStatusRecord = z.infer<typeof TaskScoreStatusSchema>;
