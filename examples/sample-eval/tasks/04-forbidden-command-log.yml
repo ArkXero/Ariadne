@@ -1,5 +1,11 @@
 id: 04-forbidden-command-log
 name: Demonstrate forbidden command matching
+dependsOn: []
+workspaceMode: mutable
+retry:
+  attempts: 1
+  delayMs: 0
+  backoff: fixed
 metadata:
   expected: pass_with_warning
 prompt: |

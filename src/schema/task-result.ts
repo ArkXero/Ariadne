@@ -3,8 +3,8 @@ import { TraceSchema } from "./trace.js";
 import { CURRENT_RUN_SCHEMA_VERSION } from "../types/index.js";
 
 const LifecycleStageSchema = z.enum([
-  "created", "loading", "validated", "preparing", "agent_running", "agent_finished",
-  "verifying", "collecting_trace", "evaluating_policy", "scoring", "persisting", "completed"
+  "created", "loading", "validated", "workspace_creating", "workspace_ready", "preparing", "agent_running", "agent_finished",
+  "verifying", "collecting_trace", "capturing_changes", "workspace_cleanup", "evaluating_policy", "scoring", "persisting", "completed"
 ]);
 
 const LifecycleEventSchema = z.object({
@@ -49,11 +49,12 @@ export const ProcessResultSchema = z.object({
     gracefulSucceeded: z.boolean().optional(),
     forceSucceeded: z.boolean().optional(),
     error: z.string().optional()
-  }).strict()
+  }).strict(),
+  redactionApplied: z.boolean().optional()
 }).strict();
 
 const PolicyResultSchema = z.object({
-  ruleId: z.enum(["files.forbidden", "commands.forbidden", "changes.max-files", "changes.max-diff-lines"]),
+  ruleId: z.enum(["files.forbidden", "commands.forbidden", "changes.max-files", "changes.max-diff-lines", "workspace.read-only"]),
   outcome: z.enum(["pass", "fail", "warning", "not-applicable"]),
   penalty: z.number().nonnegative(),
   summary: z.string(),
@@ -62,7 +63,7 @@ const PolicyResultSchema = z.object({
 
 const FailureSchema = z.object({
   category: z.enum([
-    "configuration", "task_loading", "task_selection", "repository_validation", "agent_spawn",
+    "configuration", "task_loading", "task_selection", "repository_validation", "workspace_preparation", "workspace_management", "promotion_conflict", "agent_spawn",
     "agent_nonzero", "agent_timeout", "verification_spawn", "verification_nonzero", "trace_collection",
     "policy_violation", "persistence", "user_interruption", "internal"
   ]),
@@ -84,7 +85,7 @@ export const TaskRunResultSchema = z.object({
     metadata: z.record(z.string(), z.unknown()).optional()
   }).strict(),
   status: z.enum(["running", "passed", "failed", "interrupted", "incomplete"]),
-  outcome: z.enum(["passed", "agent_failed", "verification_failed", "policy_failed", "timeout", "interrupted", "internal_failed"]),
+  outcome: z.enum(["passed", "preparation_failed", "agent_failed", "verification_failed", "policy_failed", "timeout", "interrupted", "internal_failed"]),
   startedAt: z.string().datetime(),
   completedAt: z.string().datetime(),
   durationMs: z.number().int().nonnegative(),

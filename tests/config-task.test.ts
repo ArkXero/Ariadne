@@ -10,12 +10,33 @@ import { cleanupTempDirs, tempDir, writeProject } from "./helpers.js";
 afterEach(cleanupTempDirs);
 
 describe("configuration contracts", () => {
-  it("loads strict v2 config and applies defaults", async () => {
+  it("loads strict v4 isolation, retention, preparation, and workspace-mode fields", async () => {
+    const cwd = await tempDir();
+    await mkdir(path.join(cwd, ".ariadne", "tasks"), { recursive: true });
+    await writeFile(path.join(cwd, "ariadne.yml"), `version: 4
+agent: {command: {kind: exec, file: node, args: []}}
+execution:
+  isolation: worktree
+  worktree:
+    retention: always
+    preparation:
+      commands: [{kind: exec, file: node, args: [-v]}]
+      timeout_ms: 1234
+`);
+    await writeFile(path.join(cwd, ".ariadne", "tasks", "read.yml"), `id: read\nworkspaceMode: read-only\nprompt: inspect\n`);
+    const loaded = await loadConfig(cwd);
+    const tasks = await loadTasks(cwd, loaded.config.tasks.directory, loaded.config.sourceVersion);
+    expect(loaded.config.execution).toMatchObject({ isolation: "worktree", worktree: { retention: "always", preparation: { timeout_ms: 1234 } } });
+    expect(tasks[0]).toMatchObject({ workspaceMode: "read-only" });
+  });
+
+  it("adapts strict v2 config to v4 workflow defaults", async () => {
     const cwd = await tempDir();
     await mkdir(path.join(cwd, ".ariadne", "tasks"), { recursive: true });
     await writeFile(path.join(cwd, "ariadne.yml"), "version: 2\nagent:\n  command:\n    kind: exec\n    file: node\n");
     const loaded = await loadConfig(cwd);
-    expect(loaded.config).toMatchObject({ version: 2, sourceVersion: 2, agent: { timeout_ms: 600_000 }, execution: { termination_grace_ms: 2_000 } });
+    expect(loaded.config).toMatchObject({ version: 4, sourceVersion: 2, agent: { timeout_ms: 600_000 }, execution: { termination_grace_ms: 2_000, concurrency: 1, failure_mode: "continue", isolation: "shared" } });
+    expect(loaded.warnings[0]).toContain("version 2");
     expect(Object.isFrozen(loaded.config)).toBe(true);
     expect(Object.isFrozen(loaded.config.agent)).toBe(true);
   });
@@ -54,11 +75,12 @@ describe("configuration contracts", () => {
     await expect(loadConfig(cwd, "../ariadne.yml")).rejects.toThrow("inside the invocation root");
   });
 
-  it("init writes a valid portable v2 config and remains idempotent", async () => {
+  it("init writes a valid portable v4 config and remains idempotent", async () => {
     const cwd = await tempDir();
     expect((await initCommand(cwd)).config).toBe("created");
     expect((await initCommand(cwd)).config).toBe("skipped");
     const loaded = await loadConfig(cwd);
+    expect(loaded.config.version).toBe(4);
     expect(loaded.config.agent.command).toMatchObject({ kind: "exec", file: "node" });
     expect(await readFile(path.join(cwd, ".gitignore"), "utf8")).toContain("/.ariadne/");
   });
@@ -82,6 +104,7 @@ describe("configuration contracts", () => {
     await writeFile(path.join(cwd, "ariadne.yml"), "version: 2\nagent:\n  command:\n    kind: exec\n    file: node\ntasks:\n  directory: tasks\n");
     const report = await diagnoseRepository(cwd);
     expect(report.checks).toContainEqual(expect.objectContaining({ id: "runs.writable", status: "pass" }));
+    expect(report.checks).toContainEqual(expect.objectContaining({ id: "batches.writable", status: "pass" }));
   });
 });
 

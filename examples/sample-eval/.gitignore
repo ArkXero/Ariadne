@@ -1,4 +1,7 @@
 /.ariadne/runs/
+/.ariadne/batches/
+/.ariadne/worktrees/
+/.ariadne/promotions/
 /NOTES.md
 /BROKEN.md
 /COMMAND_LOG.md

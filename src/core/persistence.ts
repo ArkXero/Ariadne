@@ -102,6 +102,6 @@ export async function updateLatestPointer(record: RunRecord, paths: RunPaths): P
 }
 
 export function summarizeOutcome(outcomes: TaskOutcome[]): TaskOutcome {
-  const precedence: TaskOutcome[] = ["interrupted", "internal_failed", "timeout", "agent_failed", "verification_failed", "policy_failed", "passed"];
+  const precedence: TaskOutcome[] = ["interrupted", "internal_failed", "preparation_failed", "timeout", "agent_failed", "verification_failed", "policy_failed", "passed"];
   return precedence.find((candidate) => outcomes.includes(candidate)) ?? "passed";
 }

@@ -75,7 +75,9 @@ describe("repository attribution", () => {
     const cwd = await tempDir();
     await initGit(cwd, { ".gitignore": ".env\n", "README.md": "initial\n" });
     await writeFile(path.join(cwd, ".env"), "fixture=true\n");
-    expect((await captureRepositorySnapshot(cwd)).entries).toContainEqual(expect.objectContaining({ path: ".env", changeType: "ignored" }));
+    const snapshot = await captureRepositorySnapshot(cwd);
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({ path: ".env", changeType: "ignored" }));
+    expect(snapshot.dirty).toBe(false);
   });
 
   it("does not attribute unchanged preexisting dirt", async () => {

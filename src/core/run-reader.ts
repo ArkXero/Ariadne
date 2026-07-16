@@ -3,6 +3,8 @@ import path from "node:path";
 import fs from "fs-extra";
 import { RunRecordSchema } from "../schema/run-record.js";
 import { CURRENT_RUN_SCHEMA_VERSION, type AnyRunRecord, type LegacyRunRecord, type RunRecord } from "../types/index.js";
+import { canonicalizePath, isPathInside } from "./path-containment.js";
+import { AriadneError } from "./errors.js";
 
 export type RunLoadResult =
   | { ok: true; path: string; run: AnyRunRecord; warnings: string[]; legacy: boolean }
@@ -31,6 +33,28 @@ function isLegacyRun(value: unknown): value is LegacyRunRecord {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Record<string, unknown>;
   return typeof candidate.startedAt === "string" && (candidate.results === undefined || Array.isArray(candidate.results));
+}
+
+function adaptModernRun(value: unknown, version: 2 | 3): unknown {
+  const adapted = structuredClone(value) as Record<string, any>;
+  adapted.schemaVersion = CURRENT_RUN_SCHEMA_VERSION;
+  if (adapted.config) {
+    adapted.config.version = 4;
+    adapted.config.sourceVersion ??= version;
+    adapted.config.execution = {
+      termination_grace_ms: 2_000, concurrency: 1, failure_mode: "continue",
+      ...adapted.config.execution,
+      isolation: "shared",
+      worktree: { retention: "on-failure", preparation: { commands: [], timeout_ms: 600_000 } }
+    };
+  }
+  for (const result of adapted.results ?? []) {
+    if (result.trace) {
+      result.trace.postPreparation ??= result.trace.baseline;
+      result.trace.preparationChanges ??= [];
+    }
+  }
+  return adapted;
 }
 
 function projectRootForManifest(runPath: string): string | undefined {
@@ -65,8 +89,7 @@ async function artifactWarnings(run: RunRecord, runPath: string): Promise<string
   const warnings: string[] = [];
   for (const artifact of referencedArtifacts(run)) {
     const absolute = path.resolve(projectRoot, artifact);
-    const relative = path.relative(projectRoot, absolute);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    if (!isPathInside(projectRoot, await canonicalizePath(absolute))) {
       warnings.push(`Run ${run.runId} has an artifact path outside the project root: ${artifact}`);
     } else if (!(await fs.pathExists(absolute))) {
       warnings.push(`Run ${run.runId} is missing artifact: ${artifact}`);
@@ -95,8 +118,15 @@ export async function loadRunFile(runPath: string): Promise<RunLoadResult> {
     if (!parsed.success) {
       return { ok: false, path: runPath, code: "malformed", error: `Invalid run record: ${parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ")}` };
     }
-    const run = parsed.data as RunRecord;
+    const run = { ...parsed.data, schemaVersion: version } as RunRecord;
     const warnings = await artifactWarnings(run, runPath);
+    return { ok: true, path: runPath, run: abandonedView(run, warnings), warnings, legacy: false };
+  }
+  if (version === 2 || version === 3) {
+    const parsed = RunRecordSchema.safeParse(adaptModernRun(raw, version));
+    if (!parsed.success) return { ok: false, path: runPath, code: "malformed", error: `Invalid v${version} run record: ${parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ")}` };
+    const run = { ...parsed.data, schemaVersion: version } as RunRecord;
+    const warnings = [`Run record version ${version} predates isolated workspace and promotion metadata.`, ...await artifactWarnings(run, runPath)];
     return { ok: true, path: runPath, run: abandonedView(run, warnings), warnings, legacy: false };
   }
   if (version === undefined || version === 1) {
@@ -142,8 +172,7 @@ export async function findLatestRunFile(cwd: string): Promise<string> {
       const pointer = await fs.readJson(pointerPath) as { manifest?: unknown };
       if (typeof pointer.manifest === "string") {
         const candidate = path.resolve(runsDirectory, pointer.manifest);
-        const relative = path.relative(runsDirectory, candidate);
-        if (!relative.startsWith("..") && await fs.pathExists(candidate)) return candidate;
+        if (isPathInside(runsDirectory, await canonicalizePath(candidate)) && await fs.pathExists(candidate)) return candidate;
       }
     } catch {
       // Fall through to deterministic history lookup.
@@ -155,4 +184,20 @@ export async function findLatestRunFile(cwd: string): Promise<string> {
   valid.sort((left, right) => right.run.startedAt.localeCompare(left.run.startedAt) || right.path.localeCompare(left.path));
   if (valid.length === 0) throw new Error(`No valid run records found in ${runsDirectory}. Run "ariadne run" first.`);
   return valid[0].path;
+}
+
+export async function resolveRunFile(cwd: string, idOrPath: string): Promise<string> {
+  const projectRoot = await fs.realpath(cwd).catch(() => path.resolve(cwd));
+  const candidate = idOrPath.includes("/") || idOrPath.includes("\\") || idOrPath.endsWith(".json")
+    ? path.resolve(projectRoot, idOrPath)
+    : path.join(projectRoot, ".ariadne", "runs", idOrPath, "run.json");
+  const resolved = await canonicalizePath(candidate);
+  if (!isPathInside(projectRoot, resolved)) {
+    throw new AriadneError({
+      category: "configuration", code: "RUN_PATH_OUTSIDE_ROOT", stage: "validated",
+      message: "Run record path must stay inside the project root.", fieldPath: "run", offendingValue: idOrPath,
+      expected: "A run ID or project-relative path without traversal.", correction: "Choose a run record inside the invocation root."
+    });
+  }
+  return candidate;
 }

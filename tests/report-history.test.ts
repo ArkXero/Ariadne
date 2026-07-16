@@ -53,6 +53,19 @@ describe("canonical reports", () => {
     expect(await readFile(legacyPath, "utf8")).toBe(before);
   });
 
+  it("loads historical v2 records through the compatibility reader", async () => {
+    const cwd = await tempDir();
+    await writeProject(cwd);
+    const run = await runAriadne({ cwd });
+    const raw = JSON.parse(await readFile(run.outputPath, "utf8"));
+    raw.schemaVersion = 2;
+    delete raw.workflow;
+    await writeFile(run.outputPath, JSON.stringify(raw));
+    const loaded = await loadRunFile(run.outputPath);
+    expect(loaded.ok && loaded.run.schemaVersion).toBe(2);
+    expect(loaded.ok && loaded.warnings.join(" ")).toContain("version 2");
+  });
+
   it("reports missing artifacts as warnings", async () => {
     const cwd = await tempDir();
     await writeProject(cwd);

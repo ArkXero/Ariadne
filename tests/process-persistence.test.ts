@@ -114,7 +114,7 @@ describe("process runner", () => {
       projectRoot: cwd,
       stdoutPath: path.join(cwd, "tree.out"),
       stderrPath: path.join(cwd, "tree.err"),
-      timeoutMs: 100,
+      timeoutMs: 250,
       terminationGraceMs: 100
     });
     const descendantPid = Number(await readFile(pidPath, "utf8"));
@@ -132,10 +132,29 @@ describe("process runner", () => {
     });
     expect(descendantAlive()).toBe(false);
   });
+
+  it("redacts sensitive environment values and credential assignments before logs and previews are written", async () => {
+    const cwd = await tempDir();
+    const stdoutPath = path.join(cwd, "redacted.out");
+    const stderrPath = path.join(cwd, "redacted.err");
+    const result = await runProcess({
+      spec: { kind: "exec", file: "node", args: ["-e", "console.log(process.env.SECRET_TOKEN); console.error('password=hunter2')"] },
+      projectRoot: cwd,
+      stdoutPath,
+      stderrPath,
+      timeoutMs: 1_000,
+      terminationGraceMs: 100,
+      env: { SECRET_TOKEN: "package-secret-token" }
+    });
+    expect(result.redactionApplied).toBe(true);
+    expect(`${result.stdoutPreview.head}${result.stderrPreview.head}`).not.toContain("package-secret-token");
+    expect(await readFile(stdoutPath, "utf8")).toContain("[REDACTED]");
+    expect(await readFile(stderrPath, "utf8")).toContain("password=[REDACTED]");
+  });
 });
 
 describe("run lifecycle and persistence", () => {
-  it("writes a v2 per-run manifest, latest pointer, and hashed prompt", async () => {
+  it("writes a v3 per-run manifest, latest pointer, and hashed prompt", async () => {
     const cwd = await tempDir();
     await writeProject(cwd, { tasks: [{ id: "safe", prompt: "TOP SECRET PROMPT" }] });
     const run = await runAriadne({ cwd, now: () => new Date("2026-01-01T00:00:00.000Z"), randomId: () => "01234567-89ab-cdef-0123-456789abcdef" });

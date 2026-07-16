@@ -1,5 +1,11 @@
 id: 01-pass-notes
 name: Add verified notes
+dependsOn: []
+workspaceMode: mutable
+retry:
+  attempts: 1
+  delayMs: 0
+  backoff: fixed
 metadata:
   expected: pass
 prompt: |

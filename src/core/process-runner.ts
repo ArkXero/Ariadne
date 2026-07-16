@@ -1,5 +1,6 @@
 import path from "node:path";
 import { createWriteStream } from "node:fs";
+import { Transform } from "node:stream";
 import { finished } from "node:stream/promises";
 import { execa, type ResultPromise } from "execa";
 import fs from "fs-extra";
@@ -8,6 +9,39 @@ import type { OutputPreview, ProcessCleanupResult, ProcessResult, ProcessSpec } 
 
 const HEAD_BYTES = 4 * 1024;
 const TAIL_BYTES = 12 * 1024;
+const REDACTION_CARRY_BYTES = 4096;
+
+class RedactingTransform extends Transform {
+  private carry = Buffer.alloc(0);
+  applied = false;
+
+  constructor(private readonly sensitiveValues: string[]) { super(); }
+
+  private redact(input: Buffer): Buffer {
+    let value = input.toString("latin1");
+    const original = value;
+    for (const secret of this.sensitiveValues) value = value.split(Buffer.from(secret).toString("latin1")).join("[REDACTED]");
+    value = value
+      .replace(/((?:api[_-]?key|token|secret|password|authorization|credential)\s*[:=]\s*)[^\s'\"]+/gi, "$1[REDACTED]")
+      .replace(/\b(?:sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b/g, "[REDACTED]")
+      .replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]");
+    if (value !== original) this.applied = true;
+    return Buffer.from(value, "latin1");
+  }
+
+  override _transform(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    const combined = Buffer.concat([this.carry, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+    const emitLength = Math.max(0, combined.length - REDACTION_CARRY_BYTES);
+    if (emitLength > 0) this.push(this.redact(combined.subarray(0, emitLength)));
+    this.carry = combined.subarray(emitLength);
+    callback();
+  }
+
+  override _flush(callback: (error?: Error | null) => void): void {
+    if (this.carry.length > 0) this.push(this.redact(this.carry));
+    callback();
+  }
+}
 
 class PreviewCollector {
   private head = Buffer.alloc(0);
@@ -134,12 +168,14 @@ async function terminateProcessTree(
 export interface RunProcessOptions {
   spec: ProcessSpec;
   projectRoot: string;
+  artifactRoot?: string;
   stdoutPath: string;
   stderrPath: string;
   input?: string;
   timeoutMs: number;
   terminationGraceMs: number;
   env?: Record<string, string>;
+  sensitiveValues?: string[];
   signal?: AbortSignal;
 }
 
@@ -150,6 +186,17 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
   const stderrFile = createWriteStream(options.stderrPath, { flags: "w", mode: 0o600 });
   const stdoutPreview = new PreviewCollector();
   const stderrPreview = new PreviewCollector();
+  const inheritedSensitive = Object.entries(process.env)
+    .filter(([key, value]) => value && value.length >= 4 && /(?:TOKEN|SECRET|PASSWORD|PASS|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTH)/i.test(key))
+    .map(([, value]) => value!);
+  const providedSensitive = Object.entries(options.env ?? {})
+    .filter(([key, value]) => value.length >= 4 && (key === "ARIADNE_TASK_PROMPT" || /(?:TOKEN|SECRET|PASSWORD|PASS|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTH)/i.test(key)))
+    .map(([, value]) => value);
+  const sensitiveValues = [...new Set([...(options.sensitiveValues ?? []), ...providedSensitive, ...inheritedSensitive].filter((value) => value.length >= 4))];
+  const stdoutRedactor = new RedactingTransform(sensitiveValues);
+  const stderrRedactor = new RedactingTransform(sensitiveValues);
+  stdoutRedactor.pipe(stdoutFile);
+  stderrRedactor.pipe(stderrFile);
   const started = new Date();
   const startedMs = Date.now();
   const actual = actualCommand(options.spec);
@@ -160,6 +207,9 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
   let interrupted = false;
   let cleanup: ProcessCleanupResult = { attempted: false };
   let terminationPromise: Promise<ProcessCleanupResult> | undefined;
+  let exitCode: number | null = null;
+  let exitSignal: string | null = null;
+  let spawnError: string | undefined;
 
   const requestTermination = (reason: "timeout" | "interrupt"): void => {
     if (!subprocess || terminationPromise) return;
@@ -184,10 +234,10 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
       stripFinalNewline: false
     });
 
-    subprocess.stdout?.on("data", (chunk: Buffer | string) => stdoutPreview.add(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-    subprocess.stderr?.on("data", (chunk: Buffer | string) => stderrPreview.add(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-    subprocess.stdout?.pipe(stdoutFile);
-    subprocess.stderr?.pipe(stderrFile);
+    stdoutRedactor.on("data", (chunk: Buffer | string) => stdoutPreview.add(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    stderrRedactor.on("data", (chunk: Buffer | string) => stderrPreview.add(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    subprocess.stdout?.pipe(stdoutRedactor);
+    subprocess.stderr?.pipe(stderrRedactor);
     if (options.input !== undefined) subprocess.stdin?.end(options.input);
     else subprocess.stdin?.end();
 
@@ -197,63 +247,47 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
     const result = await subprocess;
     settled = true;
     if (terminationPromise) cleanup = await terminationPromise;
-    const spawnError = result.failed && result.exitCode === undefined && result.signal === undefined
+    exitCode = typeof result.exitCode === "number" ? result.exitCode : null;
+    exitSignal = result.signal ?? null;
+    spawnError = result.failed && result.exitCode === undefined && result.signal === undefined
       ? redactShellCommand(result.shortMessage || result.originalMessage || "Process could not be spawned.")
       : undefined;
-
-    return {
-      kind: options.spec.kind,
-      executable: persisted.executable,
-      args: persisted.args,
-      displayCommand: persisted.displayCommand,
-      cwd: ".",
-      providedEnvironmentKeys: Object.keys(options.env ?? {}).sort(),
-      startedAt: started.toISOString(),
-      completedAt: new Date().toISOString(),
-      durationMs: Date.now() - startedMs,
-      exitCode: typeof result.exitCode === "number" ? result.exitCode : null,
-      signal: result.signal ?? null,
-      timedOut,
-      interrupted,
-      spawnError,
-      stdoutArtifact: path.relative(options.projectRoot, options.stdoutPath).split(path.sep).join("/"),
-      stderrArtifact: path.relative(options.projectRoot, options.stderrPath).split(path.sep).join("/"),
-      stdoutPreview: stdoutPreview.result(),
-      stderrPreview: stderrPreview.result(),
-      cleanup
-    };
   } catch (error) {
     settled = true;
     if (terminationPromise) cleanup = await terminationPromise;
-    return {
-      kind: options.spec.kind,
-      executable: persisted.executable,
-      args: persisted.args,
-      displayCommand: persisted.displayCommand,
-      cwd: ".",
-      providedEnvironmentKeys: Object.keys(options.env ?? {}).sort(),
-      startedAt: started.toISOString(),
-      completedAt: new Date().toISOString(),
-      durationMs: Date.now() - startedMs,
-      exitCode: null,
-      signal: null,
-      timedOut,
-      interrupted,
-      spawnError: redactShellCommand(error instanceof Error ? error.message : String(error)),
-      stdoutArtifact: path.relative(options.projectRoot, options.stdoutPath).split(path.sep).join("/"),
-      stderrArtifact: path.relative(options.projectRoot, options.stderrPath).split(path.sep).join("/"),
-      stdoutPreview: stdoutPreview.result(),
-      stderrPreview: stderrPreview.result(),
-      cleanup
-    };
+    spawnError = redactShellCommand(error instanceof Error ? error.message : String(error));
   } finally {
     if (timeout) clearTimeout(timeout);
     options.signal?.removeEventListener("abort", onAbort);
-    if (!stdoutFile.writableEnded) stdoutFile.end();
-    if (!stderrFile.writableEnded) stderrFile.end();
+    if (!stdoutRedactor.writableEnded) stdoutRedactor.end();
+    if (!stderrRedactor.writableEnded) stderrRedactor.end();
     await Promise.all([
+      finished(stdoutRedactor).catch(() => undefined),
+      finished(stderrRedactor).catch(() => undefined),
       finished(stdoutFile).catch(() => undefined),
       finished(stderrFile).catch(() => undefined)
     ]);
   }
+  return {
+    kind: options.spec.kind,
+    executable: persisted.executable,
+    args: persisted.args,
+    displayCommand: persisted.displayCommand,
+    cwd: ".",
+    providedEnvironmentKeys: Object.keys(options.env ?? {}).sort(),
+    startedAt: started.toISOString(),
+    completedAt: new Date().toISOString(),
+    durationMs: Date.now() - startedMs,
+    exitCode,
+    signal: exitSignal,
+    timedOut,
+    interrupted,
+    spawnError,
+    stdoutArtifact: path.relative(options.artifactRoot ?? options.projectRoot, options.stdoutPath).split(path.sep).join("/"),
+    stderrArtifact: path.relative(options.artifactRoot ?? options.projectRoot, options.stderrPath).split(path.sep).join("/"),
+    stdoutPreview: stdoutPreview.result(),
+    stderrPreview: stderrPreview.result(),
+    cleanup,
+    redactionApplied: stdoutRedactor.applied || stderrRedactor.applied
+  };
 }

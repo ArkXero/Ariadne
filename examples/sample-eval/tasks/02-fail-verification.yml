@@ -1,5 +1,11 @@
 id: 02-fail-verification
 name: Demonstrate verification failure
+dependsOn: [01-pass-notes]
+workspaceMode: mutable
+retry:
+  attempts: 1
+  delayMs: 0
+  backoff: fixed
 metadata:
   expected: verification_failed
 prompt: |

@@ -1,14 +1,14 @@
 # Ariadne
 
-Ariadne is a local-first CLI for evaluating coding-agent reliability. It runs file-based tasks serially in the current working tree, captures bounded process evidence and Git attribution, evaluates deterministic policies, and writes recoverable JSON plus offline HTML reports.
+Ariadne is a local-first CLI for evaluating coding-agent reliability and orchestrating file-based task workflows. It can run tasks in the shared checkout or detached Git worktrees, capture successful changes as durable local result commits, and promote reviewed result closures explicitly.
 
-Ariadne is an observability and policy tool. It is not an operating-system sandbox, secrets vault, hosted service, or proof that command-like text in agent output actually executed.
+Ariadne is an observability and policy tool. It is not an operating-system sandbox, secrets vault, hosted service, or proof that command-like output actually executed.
 
 ## Requirements and installation
 
 - Node.js 20 or newer
 - pnpm 10.34.1 for development
-- Git when changed-file or diff-line policies are enabled
+- Git when changed-file/diff policies or worktree isolation are enabled
 
 ```sh
 pnpm install
@@ -17,28 +17,25 @@ pnpm link
 ariadne --help
 ```
 
-The linked command runs `dist/cli.js`; rebuild after source changes. `pnpm smoke` verifies global binary installation from a disposable staged package and an isolated temporary `PNPM_HOME`, without altering the checkout or host global pnpm setup. The project remains pinned to pnpm 10.34.1. With pnpm 11, use its replacement command, `pnpm add --global .`.
-
-The npm package declares Node.js 20 or newer. The maintained CI matrix validates Ubuntu on Node 20, 22, and 24 and macOS/Windows on Node 22; other later Node releases are not part of the required matrix. pnpm is required only to develop Ariadne—an installed npm tarball runs with its production dependencies and Node.
+The repository is pinned to pnpm 10.34.1. With pnpm 11, use `pnpm add --global .` instead of the removed global-link behavior. An installed npm package needs Node and its production dependencies, not pnpm.
 
 ## Quick start
 
-Run these commands in the repository you want to evaluate:
+Run these commands in a repository you want to evaluate:
 
 ```sh
 ariadne init
 ariadne doctor
-ariadne run
-ariadne list
+ariadne plan --all
+ariadne run --all
+ariadne list --batches
 ariadne report
 ```
 
-`init` creates a v2 `ariadne.yml`, `.ariadne/tasks/example.yml`, `.ariadne/runs/`, and host `.gitignore` entries for `/.ariadne/` and `/ariadne.yml`. Existing files are not overwritten.
-
-The v2 command contract uses direct executable/argument arrays by default:
+`init` creates a v4 `ariadne.yml`, an example task, run/batch/worktree/promotion storage, and host `.gitignore` entries. Existing files are not overwritten.
 
 ```yaml
-version: 2
+version: 4
 
 agent:
   command:
@@ -59,6 +56,14 @@ verification:
 
 execution:
   termination_grace_ms: 2000
+  concurrency: 1
+  failure_mode: continue
+  isolation: shared
+  worktree:
+    retention: on-failure
+    preparation:
+      commands: []
+      timeout_ms: 600000
 
 checks:
   forbidden_files: [.env, ".env.*"]
@@ -67,70 +72,98 @@ checks:
   max_diff_lines: 500
 ```
 
-Use an explicit shell only when shell syntax is required:
+Direct `exec` specifications preserve argument boundaries. Use `{ kind: shell, command: "pnpm typecheck && pnpm test" }` only when shell syntax is intentional. Versionless and v1–v3 configurations remain readable through compatibility adapters and emit warnings.
 
-```yaml
-command:
-  kind: shell
-  command: "pnpm typecheck && pnpm test"
-```
-
-Versionless and v1 string-command configurations remain readable through a compatibility adapter and produce doctor warnings. New examples and `init` emit v2.
-
-## Tasks
+## Workflow tasks
 
 Tasks are strict YAML files loaded recursively from `tasks.directory`:
 
 ```yaml
-id: fix-parser
-name: Fix parser regression
+id: package
+name: Validate and package
+dependsOn: [integration-tests]
+workspaceMode: mutable
+retry:
+  attempts: 3
+  delayMs: 1000
+  backoff: fixed
+verify:
+  - kind: exec
+    file: pnpm
+    args: [build]
 metadata:
   issue: 42
-prompt: |
-  Reproduce the parser regression, make the smallest safe fix, and run tests.
+prompt: Validate and package the project.
 ```
 
-IDs must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Filename-derived IDs are supported when valid. Duplicate IDs are rejected case-insensitively with every conflicting file named. Task prompts are sent on stdin and exposed to the agent process, but run records store only prompt length and SHA-256 hash.
+`dependsOn` is case-insensitive and includes transitive dependencies when a task is selected. `workspaceMode` defaults to `mutable`. In shared isolation, mutable tasks are exclusive and only read-only tasks may overlap. In worktree isolation, mutable tasks may overlap because each attempt has a detached checkout. Omitted `verify` inherits global verification; `verify: []` disables it.
 
-## CLI contracts
+Retries in shared mode preserve the current tree. Worktree retries start from a fresh checkout of the recorded source plus successful dependency results; failed-attempt mutations are not inherited. V3 `parallelSafe: true` adapts to `workspaceMode: read-only` with a migration warning.
+
+IDs must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Filename-derived IDs are supported when valid. Duplicate IDs and dependencies are compared case-insensitively. Missing, self, duplicate, and cyclic dependencies fail before execution.
+
+## CLI
 
 Global flags are `--verbose`, `--quiet`, `--json`, and `--no-color`. Machine-readable modes reserve stdout for the payload; warnings and progress go to stderr.
 
 ```sh
-ariadne run --task fix-parser
-ariadne list --format compact
-ariadne list --format wide
-ariadne list --format json
-ariadne list --format csv --output exports/runs.csv
-ariadne list --format markdown --output exports/runs.md
-ariadne report --run <run-id-or-path> --output reports/run.html
+ariadne plan package --concurrency 2
+ariadne run package
+ariadne run --task lint --task test
+ariadne run --all --failure-mode fail-fast
+ariadne run --all --isolation worktree
+ariadne plan --all --isolation worktree --allow-dirty-base
+ariadne resume <batch-id> --concurrency 2
+ariadne rerun <batch-id> --failed
+ariadne rerun <batch-id> --task package
+ariadne list --tasks --format wide
+ariadne list --batches --format json
+ariadne list --batches --format csv --output exports/batches.csv
+ariadne report --run <run-id-or-path>
+ariadne report --batch <batch-id-or-path> --output reports/workflow.html
+ariadne changes <run-id>
+ariadne diff <run-id> --output exports/result.patch
+ariadne status <run-id>
+ariadne apply <run-id>
+ariadne discard <run-id>
+ariadne worktree clean --dry-run
 ```
 
-The existing `list --wide`, `--csv`, `--md`, and global `--json` flags remain aliases. See [docs/cli-contract.md](./docs/cli-contract.md) for exit codes and routing guarantees.
+`run` with no selectors remains equivalent to `--all`. `plan` is read-only: it creates no run or batch record and launches no processes. `list` defaults to child task attempts. `report` follows `.ariadne/latest.json` by default. Existing list format flags remain aliases. See [the CLI contract](./docs/cli-contract.md) for selection rules and exit codes.
 
-## Run artifacts
-
-Each run owns an exclusive directory:
+## Records and reports
 
 ```text
-.ariadne/runs/<run-id>/
-├── run.json
-├── report.html
-└── artifacts/<task-id>/
-    ├── agent.stdout.log
-    ├── agent.stderr.log
-    ├── verification-1.stdout.log
-    ├── verification-1.stderr.log
-    └── repository.diff
+.ariadne/
+├── latest.json
+├── batches/
+│   ├── latest.json
+│   └── <batch-id>/
+│       ├── batch.json
+│       └── report.html
+├── worktrees/<workspace-id>/workspace.json
+├── promotions/<promotion-id>.json
+└── runs/
+    ├── latest.json
+    └── <run-id>/
+        ├── run.json
+        ├── report.html
+        └── artifacts/<task-id>/...
 ```
 
-Manifests are checkpointed with temp-file, flush, atomic rename, and best-effort directory sync. `latest.json` is updated only after a valid terminal manifest exists. Full raw process bytes stay in artifact files; the manifest retains bounded 4 KiB head and 12 KiB tail previews, byte counts, and invalid UTF-8 replacement metadata.
+A batch references child attempt manifests instead of duplicating process traces. Run record v4 adds workspace, prepared/source/result revisions, change artifacts, applicability, cleanup, and workflow linkage. Batch record v2 stores isolation and result references. Workspace v1 and promotion v1 records remain separate so execution history is immutable. Historical v1–v3 runs and v1 batches remain read-only compatible.
 
-Historical v1 flat JSON runs remain readable and are never rewritten. Corrupt or future records produce warnings and are skipped by `list` instead of crashing history.
+Manifest writes use a same-directory temporary file, sync, atomic rename, and best-effort directory sync. Latest pointers update only after valid terminal manifests exist. Raw stdout/stderr bytes stream to artifacts; manifests retain bounded 4 KiB head and 12 KiB tail previews.
 
-## Policies and outcomes
+## Isolation and promotion
 
-Policies are pure and stable:
+Shared mode is the compatibility default. Mutable tasks run alone; read-only tasks may overlap and fail `workspace.read-only` if Git-visible mutation occurs. Worktree mode creates detached checkouts from committed `HEAD`, layers successful dependency result commits, and permits isolated mutable overlap up to `execution.concurrency`.
+
+Successful safe changes are committed under `refs/ariadne/results/<run-id>`. `changes` and `diff` are inspection commands. `apply` requires the same repository, a clean named branch, an eligible unapplied result, and surviving refs. It preflights the unresolved dependency closure in a temporary worktree, creates one squashed commit, then cherry-picks it into the unchanged primary checkout. `discard` removes only managed refs/worktrees; manifests and artifacts remain.
+
+Git worktrees isolate repository state, not operating-system permissions, external paths, services, caches, network access, credentials, or arbitrary subprocess side effects. Dirty-source acknowledgement uses committed `HEAD` only and records excluded primary dirt. Secret omission and log redaction are best effort beyond configured forbidden files and tested `.env` paths.
+
+## Policies
 
 | Policy | Failure penalty |
 | --- | ---: |
@@ -138,10 +171,9 @@ Policies are pure and stable:
 | `commands.forbidden` | 30 |
 | `changes.max-files` | 15 |
 | `changes.max-diff-lines` | 15 |
+| `workspace.read-only` | 100 |
 
-The score is `100 - unique failed-policy penalties`, clamped to `0..100`. Execution status, verification status, policy results, numeric score, task outcome, and CLI exit code remain separate. Direct configured commands can be blocked before launch; command-like output is reported evidence and a warning, not proof of execution or a hard violation.
-
-Git attribution compares task baseline, post-agent, and post-verification snapshots. Unchanged preexisting dirt is reported separately, while a task-caused second modification is attributed. Ignored forbidden files and symlink-target changes are checked without following external symlink targets.
+The policy score is `100 - unique penalties`, clamped to `0..100`. Execution, verification, policy status, numeric score, task outcome, batch status, and CLI exit code remain separate. Command-like process output is warning-only reported evidence.
 
 ## Development and validation
 
@@ -151,14 +183,15 @@ npm pack --dry-run
 pnpm test:package
 ```
 
-`pnpm check` is the authoritative local and CI gate: no-emit TypeScript validation, clean build, all Vitest suites, linked-CLI smoke testing, package-content assertions, and installed-tarball execution.
+`pnpm check` performs no-emit TypeScript validation, a clean build, all tests, a disposable global-command smoke test, package-content assertions, and installed-tarball workflow execution.
 
-More detail:
+Documentation:
 
 - [Architecture](./docs/architecture.md)
+- [Workflow orchestration](./docs/workflows.md)
 - [Lifecycle](./docs/run-lifecycle.md)
 - [CLI contract](./docs/cli-contract.md)
-- [Run format](./docs/run-format.md)
+- [Record formats](./docs/run-format.md)
 - [Agent adapters](./docs/agent-adapters.md)
 - [Task isolation](./docs/task-isolation.md)
 - [Testing](./TESTING.md)

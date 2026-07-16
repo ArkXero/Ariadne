@@ -4,7 +4,7 @@ Ariadne launches one configured process per task. It has no SDK requirement, hos
 
 ## Process contract
 
-Version 2 prefers a direct executable with an argument array:
+Configuration v4 retains the direct executable/argument contract introduced in v2:
 
 ```yaml
 agent:
@@ -23,7 +23,7 @@ command:
   command: "pnpm typecheck && pnpm test"
 ```
 
-Legacy v1 strings are adapted to explicit shell processes and produce a deprecation warning.
+Legacy v1 strings are adapted to explicit shell processes. Versionless and v1–v3 inputs produce compatibility warnings.
 
 For every task, Ariadne sends `task.prompt` through stdin, waits for termination, and records spawn/nonzero/signal/timeout/interruption/cleanup states separately. Agent nonzero exits still permit verification. Spawn failures skip verification. After a timeout, verification proceeds only when the launched POSIX process group is no longer observable or the Windows `taskkill` cleanup command reported success; the Windows result is still explicitly best-effort.
 
@@ -58,6 +58,8 @@ await writeFile("AGENT_NOTES.md", `Task ${process.env.ARIADNE_TASK_ID}\n\n${prom
 ```
 
 Exit `0` only when the adapter believes its work completed. Ariadne independently evaluates verification and policies.
+
+Each retry launches the same configured agent with a fresh baseline and independent record. Shared retries retain current-tree mutations. Worktree retries start from a fresh detached checkout plus successful dependency results; external state is not reset. Task-level `verify` overrides global verification; `verify: []` deliberately disables it.
 
 ## Output and command evidence
 

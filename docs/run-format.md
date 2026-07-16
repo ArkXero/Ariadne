@@ -1,37 +1,33 @@
-# Run Record v2
+# Record Formats
 
-The authoritative manifest is `.ariadne/runs/<run-id>/run.json`. `schemaVersion: 2` records a terminal or checkpointed view of one invocation.
+## Task run record v4
 
-## Top-level fields
+Every task attempt owns `.ariadne/runs/<run-id>/run.json`. Run record v4 retains prior execution evidence and adds a workspace reference, source/prepared/result revisions, inherited results, preparation processes, retention/cleanup, and a change-artifact reference. Its optional `workflow` link records batch, plan, task, and globally increasing attempt number.
 
-- `runId`: sortable UTC timestamp plus random suffix.
-- `status`: `running`, `completed`, `failed`, `interrupted`, `incomplete`, or reader-derived `abandoned`.
-- timestamps and duration.
-- Ariadne, Node, platform, release, and architecture metadata.
-- owner PID/hostname/start time.
-- project root `.` plus relative config and repository metadata.
-- normalized, redacted config and legacy compatibility warnings.
-- typed lifecycle events, structured failures, task results, summary, and relative artifacts.
+Full stdout/stderr bytes remain in artifact files. Manifests keep bounded head/tail previews, byte counts, UTF-8 replacement metadata, and spawn/exit/signal/timeout/interruption/cleanup distinctions. Prompt text and environment values are omitted; prompt length and SHA-256 are stored.
 
-## Task result
+Run readers preserve v1 flat-file and v2/v3 directory compatibility without rewriting history. Missing artifacts become warnings. Malformed and future records are skipped by history and explained by explicit reports.
 
-Each result separates:
+## Batch record v2
 
-- persisted task identity, metadata, prompt SHA-256, and prompt byte length;
-- terminal task outcome and lifecycle;
-- agent process and verification process results;
-- baseline, post-agent, and final repository snapshots;
-- preexisting changes and agent/verification attribution;
-- forbidden-file and command evidence;
-- policy outcomes and score deductions;
-- structured failures.
+Each invocation owns `.ariadne/batches/<batch-id>/batch.json`. The record includes:
 
-Process output artifacts contain every byte Ariadne captured from the launched process's stdout/stderr pipes until those pipes closed. They cannot include output redirected elsewhere or written after a descriptor is detached. Manifest previews contain head/tail text, captured byte count, UTF-8 replacement mode, and a replacement-detected boolean. Process data distinguishes spawn error, numeric exit, signal, timeout, interruption, and cleanup attempts.
+- compatibility fields `kind`, `runId`, run-like `status`, `outcome`, and `tasks`, plus `batchId` and the more specific `batchStatus`;
+- graph edges, selected roots, closure, levels, stable order, plan ID, and semantic fingerprint;
+- effective concurrency, failure mode, isolation, workspace mode, retention, verification, retry, and dependency-result settings;
+- task states, all child attempt references, retry decisions, block/skip evidence, and relation to a resumed/rerun source;
+- owner, repository HEAD, lifecycle checkpoints, warnings, failures, aggregate counts, and score summary.
 
-## Paths and privacy
+The batch never duplicates child traces or logs. Batch score is the arithmetic mean of final-attempt policy scores for launched tasks; blocked/skipped tasks are excluded and score never determines status.
 
-Artifact, config, task, and repository paths are repository-relative POSIX strings. Prompt text and environment values are omitted. Common credential-looking command arguments receive best-effort redaction, but Ariadne is not a secrets vault: users must not place secrets in prompts, filenames, stdout/stderr, diffs, or task metadata.
+Task states are `pending`, `ready`, `running`, `retry_wait`, `succeeded`, `failed`, `blocked`, `skipped`, `interrupted`, and `incomplete`. Terminal batch statuses are `succeeded`, `succeeded_with_warnings`, `partially_failed`, `failed`, `interrupted`, and `incomplete`; readers may derive `abandoned` for a dead same-host owner.
 
-## Compatibility
+## Pointers and privacy
 
-Readers accept v1 flat files under `.ariadne/runs/*.json`, normalize their limited data into the report view, label attribution as legacy/unknown, and never mutate them. Malformed and future records return structured errors. `list` skips them with warnings; `report` explains the specific problem. Referenced missing artifacts also become warnings.
+- `.ariadne/runs/latest.json`: latest terminal child attempt.
+- `.ariadne/batches/latest.json`: latest terminal batch.
+- `.ariadne/latest.json`: latest completed invocation and its record kind.
+
+Workspace record v1 lives at `.ariadne/worktrees/<workspace-id>/workspace.json`. Change artifact v1 lives with the child run. Promotion event v1 lives under `.ariadne/promotions/`; apply/discard never rewrite execution records or execution latest pointers.
+
+Pointers update only after valid terminal manifests exist. Paths are project-relative POSIX strings and repository identity is opaque. Configured forbidden and high-confidence sensitive paths are excluded from result commits/patches. Streaming log and preview redaction is best effort; Ariadne is not a secrets vault.

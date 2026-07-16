@@ -27,7 +27,7 @@ const ChangeEvidenceSchema = z.object({
   path: z.string(),
   originalPath: z.string().optional(),
   changeType: RepositoryEntrySchema.shape.changeType,
-  source: z.enum(["agent", "verification", "agent-and-verification"]),
+  source: z.enum(["preparation", "agent", "verification", "multiple", "agent-and-verification"]),
   baselineFingerprint: z.string().optional(),
   finalFingerprint: z.string().optional()
 }).strict();
@@ -40,9 +40,11 @@ const ForbiddenFileStateSchema = z.object({
 
 export const TraceSchema = z.object({
   baseline: RepositorySnapshotSchema,
+  postPreparation: RepositorySnapshotSchema.optional(),
   postAgent: RepositorySnapshotSchema,
   final: RepositorySnapshotSchema,
   preexistingChanges: z.array(RepositoryEntrySchema),
+  preparationChanges: z.array(ChangeEvidenceSchema),
   agentChanges: z.array(ChangeEvidenceSchema),
   verificationChanges: z.array(ChangeEvidenceSchema),
   taskChanges: z.array(ChangeEvidenceSchema),
@@ -54,7 +56,7 @@ export const TraceSchema = z.object({
   diffArtifact: z.string().optional(),
   diffLineCount: z.number().int().nonnegative(),
   observedCommands: z.array(z.object({
-    source: z.enum(["agent-config", "verification-config", "agent-output", "verification-output"]),
+    source: z.enum(["preparation-config", "agent-config", "verification-config", "preparation-output", "agent-output", "verification-output"]),
     representation: z.string(),
     confidence: z.enum(["executed", "reported", "blocked"])
   }).strict())

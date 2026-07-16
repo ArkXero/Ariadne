@@ -1,5 +1,11 @@
 id: 03-forbidden-file
 name: Demonstrate forbidden file detection
+dependsOn: [01-pass-notes]
+workspaceMode: mutable
+retry:
+  attempts: 1
+  delayMs: 0
+  backoff: fixed
 metadata:
   expected: check_failed
 prompt: |

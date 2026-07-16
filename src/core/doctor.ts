@@ -5,8 +5,11 @@ import { actualCommand } from "./command-utils.js";
 import { renderProcessSpec, loadConfig } from "./config.js";
 import { formatAriadneError, AriadneError } from "./errors.js";
 import { captureRepositorySnapshot } from "./git.js";
+import { listWorkspaces } from "./workspace-manager.js";
+import { loadPromotions } from "./promotion.js";
 import { loadTasks } from "./task-loader.js";
-import type { ProcessSpec } from "../types/index.js";
+import { WorkflowGraph } from "./workflow-graph.js";
+import type { AriadneTask, ProcessSpec } from "../types/index.js";
 
 export type DoctorCheckStatus = "pass" | "warning" | "fail";
 
@@ -113,18 +116,21 @@ export async function diagnoseRepository(cwd: string, configPath = "ariadne.yml"
   let loaded: Awaited<ReturnType<typeof loadConfig>>;
   try {
     loaded = await loadConfig(cwd, configPath);
-    checks.push(check("config.load", "pass", `Configuration version ${loaded.config.sourceVersion} loaded and normalized to v2.`, undefined, loaded.path));
-    for (const warning of loaded.warnings) checks.push(check("config.compatibility", "warning", warning, "Migrate the configuration to version 2."));
+    checks.push(check("config.load", "pass", `Configuration version ${loaded.config.sourceVersion} loaded and normalized to v3.`, undefined, loaded.path));
+    for (const warning of loaded.warnings) checks.push(check("config.compatibility", "warning", warning, "Migrate the configuration to version 3."));
   } catch (error) {
     const message = error instanceof AriadneError ? formatAriadneError(error, verbose) : error instanceof Error ? verbose && error.stack ? error.stack : error.message : String(error);
     checks.push(check("config.load", "fail", message, "Fix the configuration and run doctor again."));
     return buildReport(checks);
   }
 
+  let tasks: AriadneTask[] = [];
   try {
-    const tasks = await loadTasks(loaded.projectRoot, loaded.config.tasks.directory);
+    tasks = await loadTasks(loaded.projectRoot, loaded.config.tasks.directory, loaded.config.sourceVersion);
+    new WorkflowGraph(tasks);
     checks.push(check("tasks.load", "pass", `Loaded ${tasks.length} unique valid task${tasks.length === 1 ? "" : "s"}.`, undefined, path.resolve(loaded.projectRoot, loaded.config.tasks.directory)));
     checks.push(check("tasks.duplicates", "pass", "Task IDs are unique when compared case-insensitively."));
+    checks.push(check("workflow.graph", "pass", "Task dependency graph is valid and acyclic."));
   } catch (error) {
     checks.push(check(error instanceof AriadneError && error.code === "TASK_ID_DUPLICATE" ? "tasks.duplicates" : "tasks.load", "fail", error instanceof Error ? error.message : String(error), "Create or fix task YAML files."));
   }
@@ -137,6 +143,18 @@ export async function diagnoseRepository(cwd: string, configPath = "ariadne.yml"
     const verificationScript = await scriptCheck(loaded.projectRoot, `verification.${index + 1}.script`, command);
     if (verificationScript) checks.push(verificationScript);
   }
+  for (const task of tasks) {
+    for (const [index, command] of (task.verify ?? []).entries()) {
+      checks.push(await commandCheck(loaded.projectRoot, `task.${task.id}.verification.${index + 1}.executable`, command));
+      const script = await scriptCheck(loaded.projectRoot, `task.${task.id}.verification.${index + 1}.script`, command);
+      if (script) checks.push(script);
+    }
+  }
+  for (const [index, command] of loaded.config.execution.worktree.preparation.commands.entries()) {
+    checks.push(await commandCheck(loaded.projectRoot, `worktree.preparation.${index + 1}.executable`, command));
+    const script = await scriptCheck(loaded.projectRoot, `worktree.preparation.${index + 1}.script`, command);
+    if (script) checks.push(script);
+  }
   if (loaded.config.verification.commands.length === 0) {
     checks.push(check("verification.configured", "warning", "No verification commands configured.", "Add at least one deterministic verification command."));
   }
@@ -146,6 +164,14 @@ export async function diagnoseRepository(cwd: string, configPath = "ariadne.yml"
   checks.push(repository.available
     ? check("repository.git", "pass", `Git repository is available${repository.branch ? ` on branch ${repository.branch}` : " in detached state"}.`)
     : check("repository.git", requiresGit ? "fail" : "warning", repository.unavailableReason ?? "Git state is unavailable.", requiresGit ? "Initialize Git or remove Git-dependent limits." : "Initialize Git for changed-file and diff attribution."));
+  checks.push(!repository.available
+    ? check("worktree.capability", loaded.config.execution.isolation === "worktree" ? "fail" : "warning", "Git worktree capability is unavailable outside a Git repository.", "Use shared isolation or initialize Git with a committed HEAD.")
+    : !repository.head
+      ? check("worktree.capability", loaded.config.execution.isolation === "worktree" ? "fail" : "warning", "Git repository has no committed HEAD for detached worktree creation.", "Create an initial commit before using worktree isolation.")
+      : check("worktree.capability", "pass", `Git worktree isolation can use committed source ${repository.head.slice(0, 12)}.`));
+  checks.push(repository.dirty
+    ? check("worktree.source-clean", "warning", "The primary checkout is dirty; isolated runs reject it unless --allow-dirty-base is explicit.", "Commit or clean the checkout. Acknowledged dirt is excluded from isolated worktrees.")
+    : check("worktree.source-clean", "pass", "Primary checkout is clean for worktree isolation."));
 
   const runsDirectory = path.join(loaded.projectRoot, ".ariadne", "runs");
   const writableTarget = await nearestExistingAncestor(runsDirectory);
@@ -153,6 +179,32 @@ export async function diagnoseRepository(cwd: string, configPath = "ariadne.yml"
   checks.push(writable
     ? check("runs.writable", "pass", "Run storage can be created from a writable existing ancestor.", undefined, runsDirectory)
     : check("runs.writable", "fail", `Run storage cannot be created because ${writableTarget} is not writable.`, "Fix directory ownership or permissions.", runsDirectory));
+
+  const batchesDirectory = path.join(loaded.projectRoot, ".ariadne", "batches");
+  const batchesTarget = await nearestExistingAncestor(batchesDirectory);
+  const batchesWritable = await fs.access(batchesTarget, constants.W_OK).then(() => true, () => false);
+  checks.push(batchesWritable
+    ? check("batches.writable", "pass", "Batch storage can be created from a writable existing ancestor.", undefined, batchesDirectory)
+    : check("batches.writable", "fail", `Batch storage cannot be created because ${batchesTarget} is not writable.`, "Fix directory ownership or permissions.", batchesDirectory));
+  const worktreesDirectory = path.join(loaded.projectRoot, ".ariadne", "worktrees");
+  const worktreesTarget = await nearestExistingAncestor(worktreesDirectory);
+  const worktreesWritable = await fs.access(worktreesTarget, constants.W_OK).then(() => true, () => false);
+  checks.push(worktreesWritable
+    ? check("worktrees.writable", "pass", "Managed worktree metadata can be created from a writable existing ancestor.", undefined, worktreesDirectory)
+    : check("worktrees.writable", "fail", `Managed worktree storage cannot be created because ${worktreesTarget} is not writable.`, "Fix directory ownership or permissions.", worktreesDirectory));
+  const workspaces = await listWorkspaces(loaded.projectRoot);
+  const stale = workspaces.filter((item) => item.warning || item.record && ["creating", "preparing", "running", "capturing", "removing", "stale", "failed"].includes(item.record.state));
+  checks.push(stale.length > 0
+    ? check("worktrees.stale", "warning", `${stale.length} managed workspace record(s) are corrupt, uncertain, stale, or failed.`, "Inspect ariadne worktree list, then use ariadne worktree clean --dry-run.")
+    : check("worktrees.stale", "pass", "No stale or corrupt managed workspace records were found."));
+  const promotions = await loadPromotions(loaded.projectRoot);
+  const incompletePromotions = promotions.filter((item) => item.warning || item.record && ["validating", "preflighting", "applying"].includes(item.record.status));
+  checks.push(incompletePromotions.length > 0
+    ? check("promotion.incomplete", "warning", `${incompletePromotions.length} promotion record(s) are corrupt or incomplete.`, "Inspect promotion metadata before applying another result; Ariadne will not assume ownership of unrelated Git state.")
+    : check("promotion.incomplete", "pass", "No incomplete promotion records were found."));
+  checks.push(loaded.config.execution.concurrency > 1 && loaded.config.execution.isolation === "shared" && !tasks.some((task) => task.workspaceMode === "read-only")
+    ? check("workflow.concurrency", "warning", `Concurrency is ${loaded.config.execution.concurrency}, but every shared-mode task is mutable; execution will remain serial.`, "Declare only genuinely non-mutating tasks workspaceMode: read-only, or select worktree isolation for mutable overlap.")
+    : check("workflow.concurrency", "pass", `Workflow concurrency ${loaded.config.execution.concurrency} has a coherent task safety configuration.`));
 
   return buildReport(checks);
 }

@@ -1,4 +1,4 @@
-version: 2
+version: 4
 
 agent:
   command:
@@ -19,6 +19,14 @@ verification:
 
 execution:
   termination_grace_ms: 2000
+  concurrency: 1
+  failure_mode: continue
+  isolation: shared
+  worktree:
+    retention: on-failure
+    preparation:
+      commands: []
+      timeout_ms: 600000
 
 checks:
   forbidden_files:

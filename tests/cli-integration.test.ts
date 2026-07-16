@@ -1,8 +1,9 @@
 import path from "node:path";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, symlink, writeFile } from "node:fs/promises";
+import fs from "fs-extra";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanupTempDirs, tempDir, writeProject } from "./helpers.js";
+import { cleanupTempDirs, initGit, tempDir, writeProject } from "./helpers.js";
 
 const cliPath = path.resolve("dist/cli.js");
 
@@ -23,22 +24,56 @@ describe("CLI integration", () => {
     const cwd = await tempDir();
     const help = cli(cwd, ["--help"]);
     expect(help.status).toBe(0);
-    expect(help.stdout).toMatch(/init|doctor|run|list|report/);
+    expect(help.stdout).toMatch(/init|doctor|plan|run|resume|rerun|list|report|changes|diff|status|apply|discard|worktree/);
     expect(cli(cwd, ["--version"]).stdout.trim()).toBe("0.1.0");
-    for (const command of ["init", "doctor", "run", "list", "report"]) {
+    for (const command of ["init", "doctor", "plan", "run", "resume", "rerun", "list", "report", "changes", "diff", "status", "apply", "discard", "worktree"]) {
       expect(cli(cwd, [command, "--help"]).stdout).toContain("Global Options:");
       expect(cli(cwd, [command, "--help"]).stdout).toContain("--json");
     }
-  });
+  }, 20_000);
 
   it("keeps JSON stdout parseable while routing progress to stderr", async () => {
     const cwd = await tempDir();
     await writeProject(cwd);
     const result = cli(cwd, ["run", "--json"]);
     expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ schemaVersion: 2, outcome: "passed", manifestPath: expect.stringMatching(/^\.ariadne\/runs\//) });
+    expect(JSON.parse(result.stdout)).toMatchObject({ kind: "batch", schemaVersion: 2, outcome: "passed", batchStatus: "succeeded", manifestPath: expect.stringMatching(/^\.ariadne\/batches\//) });
     expect(result.stdout).not.toContain(cwd);
     expect(result.stderr).toContain("Running task: example");
+  });
+
+  it("plans dependency closure without creating execution records", async () => {
+    const cwd = await tempDir();
+    await writeProject(cwd, { tasks: [{ id: "a" }, { id: "b" }] });
+    await writeFile(path.join(cwd, ".ariadne", "tasks", "b.yml"), "id: b\ndependsOn: [a]\nprompt: b\n");
+    const result = cli(cwd, ["plan", "b", "--json"]);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ selectedRoots: ["b"], includedTasks: ["a", "b"], order: ["a", "b"] });
+    expect(await fs.pathExists(path.join(cwd, ".ariadne", "runs"))).toBe(false);
+    expect(await fs.pathExists(path.join(cwd, ".ariadne", "batches"))).toBe(false);
+  });
+
+  it("keeps legacy plan JSON pure while routing compatibility warnings to stderr", async () => {
+    const cwd = await tempDir();
+    await fs.ensureDir(path.join(cwd, ".ariadne", "tasks"));
+    await writeFile(path.join(cwd, "ariadne.yml"), "version: 2\nagent:\n  command: {kind: exec, file: node, args: []}\n");
+    await writeFile(path.join(cwd, ".ariadne", "tasks", "a.yml"), "id: a\nprompt: a\n");
+    const result = cli(cwd, ["plan", "--json"]);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).order).toEqual(["a"]);
+    expect(result.stderr).toContain("version 2 is deprecated");
+  });
+
+  it("lists and reports workflow batches separately from child attempts", async () => {
+    const cwd = await tempDir();
+    await writeProject(cwd);
+    const run = cli(cwd, ["run", "--json", "--quiet"]);
+    const batch = JSON.parse(run.stdout);
+    const listed = cli(cwd, ["list", "--batches", "--json", "--quiet"]);
+    expect(JSON.parse(listed.stdout)[0]).toMatchObject({ batch_id: batch.batchId, status: "succeeded" });
+    const report = cli(cwd, ["report", "--batch", batch.batchId, "--json", "--quiet"]);
+    expect(JSON.parse(report.stdout)).toMatchObject({ kind: "batch", batchId: batch.batchId, batchStatus: "succeeded" });
+    expect(JSON.parse(cli(cwd, ["list", "--tasks", "--json", "--quiet"]).stdout)[0]).toMatchObject({ run_id: batch.tasks[0].runId, batch_id: batch.batchId, attempt: 1 });
   });
 
   it("uses stable configuration, task-selection, and repository exit codes", async () => {
@@ -52,6 +87,35 @@ describe("CLI integration", () => {
     const gitRequired = await tempDir();
     await writeProject(gitRequired, { checks: "  forbidden_files: []\n  forbidden_commands: []\n  max_changed_files: 1" });
     expect(cli(gitRequired, ["run", "--quiet"]).status).toBe(4);
+  });
+
+  it("uses usage exit code 2 for parser-time option validation", async () => {
+    const cwd = await tempDir();
+    await writeProject(cwd);
+    for (const args of [
+      ["plan", "--all", "--concurrency", "33"],
+      ["plan", "--all", "--failure-mode", "stop"],
+      ["plan", "--all", "--isolation", "container"],
+      ["list", "--format", "xml"]
+    ]) {
+      const result = cli(cwd, args);
+      expect(result.status, `${args.join(" ")} stderr: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it("lists real dirty paths in worktree-isolation diagnostics", async () => {
+    const cwd = await tempDir();
+    await writeProject(cwd);
+    const config = await readFile(path.join(cwd, "ariadne.yml"), "utf8");
+    await writeFile(path.join(cwd, "ariadne.yml"), config.replace("  isolation: shared", "  isolation: worktree"));
+    await writeFile(path.join(cwd, ".gitignore"), "node_modules/\n");
+    await initGit(cwd, {});
+    await writeFile(path.join(cwd, "dirty file.txt"), "uncommitted\n");
+
+    const result = cli(cwd, ["run", "--quiet"]);
+    expect(result.status).toBe(4);
+    expect(result.stdout).toContain("DIRTY_WORKTREE_BASE");
+    expect(result.stdout).toContain("dirty file.txt");
   });
 
   it("uses stable execution and policy exit codes", async () => {
@@ -80,12 +144,15 @@ describe("CLI integration", () => {
     const cwd = await tempDir();
     await writeProject(cwd);
     expect(cli(cwd, ["list", "--json", "--csv"]).status).toBe(2);
+    expect(cli(cwd, ["run", "example", "--all"]).status).toBe(2);
+    expect(cli(cwd, ["rerun", "missing", "--all", "--failed"]).status).toBe(2);
     const output = cli(cwd, ["doctor", "--no-color"], { NO_COLOR: "1" });
     expect(`${output.stdout}${output.stderr}`).not.toMatch(/\u001b\[[0-9;]*m/);
   });
 
   it("uses configuration exit code 2 for output paths outside the invocation root", async () => {
     const cwd = await tempDir();
+    const outside = await tempDir();
     await writeProject(cwd);
     expect(cli(cwd, ["run", "--quiet"]).status).toBe(0);
     const list = cli(cwd, ["list", "--output", "../outside.csv", "--format", "csv"]);
@@ -94,5 +161,9 @@ describe("CLI integration", () => {
     expect(report.status).toBe(2);
     expect(list.stderr).toContain("OUTPUT_PATH_OUTSIDE_ROOT");
     expect(report.stderr).toContain("OUTPUT_PATH_OUTSIDE_ROOT");
+    await symlink(outside, path.join(cwd, "escape"), process.platform === "win32" ? "junction" : "dir");
+    const symlinked = cli(cwd, ["list", "--output", "escape/runs.csv", "--format", "csv"]);
+    expect(symlinked.status).toBe(2);
+    expect(symlinked.stderr).toContain("OUTPUT_PATH_OUTSIDE_ROOT");
   });
 });

@@ -3,15 +3,42 @@ import fs from "fs-extra";
 import { isMap, isScalar, parseDocument } from "yaml";
 import { z } from "zod";
 import { AriadneError } from "./errors.js";
-import type { AriadneTask } from "../types/index.js";
+import type { AriadneTask, LegacyConfigVersion } from "../types/index.js";
 
 export const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-const TaskSchema = z.object({
+const ProcessSpecSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("exec"), file: z.string().trim().min(1), args: z.array(z.string()).default([]) }).strict(),
+  z.object({ kind: z.literal("shell"), command: z.string().trim().min(1) }).strict()
+]);
+
+const BaseTaskSchema = z.object({
   id: z.string().trim().regex(TASK_ID_PATTERN, "id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}").optional(),
   name: z.string().trim().min(1).optional(),
   prompt: z.string().trim().min(1, "prompt is required"),
   metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const LegacyTaskSchema = BaseTaskSchema.strict();
+const V3TaskSchema = BaseTaskSchema.extend({
+  dependsOn: z.array(z.string().trim().regex(TASK_ID_PATTERN, "dependency id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}")).default([]),
+  parallelSafe: z.boolean().default(false),
+  retry: z.object({
+    attempts: z.number().int().min(1).max(10).default(1),
+    delayMs: z.number().int().min(0).max(3_600_000).default(0),
+    backoff: z.enum(["fixed", "exponential"]).default("fixed")
+  }).strict().default({ attempts: 1, delayMs: 0, backoff: "fixed" }),
+  verify: z.array(ProcessSpecSchema).optional()
+}).strict();
+const V4TaskSchema = BaseTaskSchema.extend({
+  dependsOn: z.array(z.string().trim().regex(TASK_ID_PATTERN, "dependency id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}")).default([]),
+  workspaceMode: z.enum(["mutable", "read-only"]).default("mutable"),
+  retry: z.object({
+    attempts: z.number().int().min(1).max(10).default(1),
+    delayMs: z.number().int().min(0).max(3_600_000).default(0),
+    backoff: z.enum(["fixed", "exponential"]).default("fixed")
+  }).strict().default({ attempts: 1, delayMs: 0, backoff: "fixed" }),
+  verify: z.array(ProcessSpecSchema).optional()
 }).strict();
 
 function isInside(root: string, candidate: string): boolean {
@@ -92,7 +119,11 @@ function duplicateTaskIdError(id: string, files: string[]): AriadneError {
   });
 }
 
-export async function loadTasks(projectRoot: string, tasksDirectory: string): Promise<AriadneTask[]> {
+export async function loadTasks(
+  projectRoot: string,
+  tasksDirectory: string,
+  contractVersion: LegacyConfigVersion | 4 = 4
+): Promise<AriadneTask[]> {
   const canonicalRoot = await fs.realpath(projectRoot).catch(() => path.resolve(projectRoot));
   const unresolvedDirectory = path.resolve(canonicalRoot, tasksDirectory);
   if (!isInside(canonicalRoot, unresolvedDirectory)) {
@@ -192,7 +223,8 @@ export async function loadTasks(projectRoot: string, tasksDirectory: string): Pr
   return records.map((record) => {
     const document = parseDocument(record.source);
     const rawTask = document.toJSON();
-    const parsed = TaskSchema.safeParse(rawTask ?? {});
+    const schema = contractVersion === 4 ? V4TaskSchema : contractVersion === 3 ? V3TaskSchema : LegacyTaskSchema;
+    const parsed = schema.safeParse(rawTask ?? {});
     if (!parsed.success) {
       const issues = parsed.error.issues.map((issue) => `${issue.path.length === 0 ? "(root)" : issue.path.join(".")}: ${issue.message}`);
       throw new AriadneError({
@@ -221,11 +253,21 @@ export async function loadTasks(projectRoot: string, tasksDirectory: string): Pr
       });
     }
 
+    const orchestration = contractVersion === 4
+      ? parsed.data as z.infer<typeof V4TaskSchema>
+      : contractVersion === 3
+        ? { ...(parsed.data as z.infer<typeof V3TaskSchema>), workspaceMode: (parsed.data as z.infer<typeof V3TaskSchema>).parallelSafe ? "read-only" as const : "mutable" as const }
+        : { ...parsed.data, dependsOn: [], workspaceMode: "mutable" as const, retry: { attempts: 1, delayMs: 0, backoff: "fixed" as const } };
     return {
-      ...parsed.data,
       id,
       name: parsed.data.name ?? id,
-      file: record.relativeFile
+      file: record.relativeFile,
+      prompt: parsed.data.prompt,
+      ...(parsed.data.metadata ? { metadata: parsed.data.metadata } : {}),
+      dependsOn: orchestration.dependsOn,
+      workspaceMode: orchestration.workspaceMode,
+      retry: orchestration.retry,
+      ...((contractVersion === 3 || contractVersion === 4) && "verify" in orchestration && orchestration.verify !== undefined ? { verify: orchestration.verify } : {})
     };
   });
 }

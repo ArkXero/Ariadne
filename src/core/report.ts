@@ -10,7 +10,8 @@ import type {
   ProcessResult,
   RepositoryEntry,
   RunRecord,
-  TaskOutcome
+  TaskOutcome,
+  PromotionRecord
 } from "../types/index.js";
 
 export interface ProcessView {
@@ -66,6 +67,10 @@ export interface RunReportView {
   failures: string[];
   lifecycle: Array<{ stage: string; at: string; detail?: string }>;
   manifestPath?: string;
+  workflow?: RunRecord["workflow"];
+  workspace?: RunRecord["workspace"];
+  changeArtifact?: RunRecord["changeArtifact"];
+  promotions: PromotionRecord[];
 }
 
 function preview(head: string, tail: string): string {
@@ -127,7 +132,7 @@ function legacyPolicies(result: LegacyTaskRunResult): PolicyResult[] {
   });
 }
 
-function formatFailureRecord(failure: RunRecord["failures"][number]): string {
+export function formatFailureRecord(failure: RunRecord["failures"][number]): string {
   const diagnostic = failure.details?.diagnostic && typeof failure.details.diagnostic === "object"
     ? failure.details.diagnostic as Record<string, unknown>
     : {};
@@ -157,6 +162,10 @@ function currentView(run: RunRecord, warnings: string[], manifestPath?: string):
     failures: run.failures.map(formatFailureRecord),
     lifecycle: run.lifecycle,
     manifestPath,
+    workflow: run.workflow,
+    workspace: run.workspace,
+    changeArtifact: run.changeArtifact,
+    promotions: [],
     tasks: run.results.map((result) => ({
       id: result.task.id,
       name: result.task.name,
@@ -216,7 +225,8 @@ function legacyView(run: LegacyRunRecord, warnings: string[], manifestPath?: str
     failures: [],
     lifecycle: [],
     manifestPath,
-    tasks
+    tasks,
+    promotions: []
   };
 }
 
@@ -256,6 +266,10 @@ export function formatRunCompletion(run: RunRecord & { outputPath?: string }): s
 
 export function formatTerminalSummary(model: RunReportView): string {
   const lines = [`Ariadne run: ${model.runId}`, `Status: ${model.status}`, `Outcome: ${model.outcome}`, `Duration: ${duration(model.durationMs)}`, `Tasks: ${model.tasks.length}`, `Run schema: ${model.schemaVersion}`];
+  if (model.workflow) lines.push(`Batch: ${model.workflow.batchId}`, `Attempt: ${model.workflow.attempt}`);
+  if (model.workspace) lines.push(`Isolation: ${model.workspace.strategy}`, `Workspace: ${model.workspace.workspaceId} (${model.workspace.state})`);
+  if (model.changeArtifact) lines.push(`Change artifact: ${model.changeArtifact.state}`, `Applicable: ${model.changeArtifact.applicable ? "yes" : "no"}`, `Result revision: ${model.changeArtifact.resultRevision ?? "none"}`);
+  if (model.promotions.length > 0) lines.push(`Promotions: ${model.promotions.map((item) => `${item.kind}:${item.status}`).join(", ")}`);
   for (const warning of model.warnings) lines.push(`Warning: ${warning}`);
   for (const task of model.tasks) {
     lines.push("", `${task.outcome.toUpperCase()} ${task.id} - ${task.name}`, `  Agent: ${task.agent?.status ?? "not-run"}`, `  Verification: ${task.verification.map((item) => item.status).join(", ") || "none"}`, `  Policy score: ${task.score}`, `  Changed files: ${task.changedFiles.length}, diff lines: ${task.diffLineCount}`);
@@ -278,8 +292,11 @@ export function buildHtmlReport(model: RunReportView): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ariadne report ${escapeHtml(model.runId)}</title>
 <style>body{margin:0;background:#f6f7f4;color:#1e241f;font:15px/1.55 system-ui,sans-serif}main{max-width:1050px;margin:auto;padding:36px 20px}h1{font-size:2rem}h2{margin-top:2.5rem}.summary,.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.card,section{background:#fff;border:1px solid #d8ddd5;border-radius:8px;padding:16px;margin-top:12px}.card strong,dt{display:block;color:#5c685e;font-size:.78rem;text-transform:uppercase}dd{margin:0 0 8px}pre{overflow:auto;white-space:pre-wrap;background:#111711;color:#edf3ed;padding:12px;border-radius:6px}.fail{border-left:5px solid #b42318}.pass{border-left:5px solid #18794e}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid #ddd;padding:8px}code{overflow-wrap:anywhere}@media print{body{background:#fff}details{display:block}section,.card{break-inside:avoid}}</style></head><body><main>
-<header><h1>Ariadne Reliability Report</h1><p>Run ${escapeHtml(model.runId)}</p><div class="summary"><div class="card"><strong>Status</strong>${escapeHtml(model.status)}</div><div class="card"><strong>Outcome</strong>${escapeHtml(model.outcome)}</div><div class="card"><strong>Duration</strong>${escapeHtml(duration(model.durationMs))}</div><div class="card"><strong>Schema</strong>${escapeHtml(model.schemaVersion)}</div></div></header>
+<header><h1>Ariadne Reliability Report</h1><p>Run ${escapeHtml(model.runId)}</p>${model.workflow ? `<p>Parent batch: ${escapeHtml(model.workflow.batchId)}; attempt ${escapeHtml(model.workflow.attempt)}</p>` : ""}<div class="summary"><div class="card"><strong>Status</strong>${escapeHtml(model.status)}</div><div class="card"><strong>Outcome</strong>${escapeHtml(model.outcome)}</div><div class="card"><strong>Duration</strong>${escapeHtml(duration(model.durationMs))}</div><div class="card"><strong>Schema</strong>${escapeHtml(model.schemaVersion)}</div></div></header>
 ${model.warnings.map((warning) => `<p class="card fail"><strong>Warning</strong>${escapeHtml(warning)}</p>`).join("")}
+${model.workspace ? `<section><h2>Workspace isolation</h2><dl><dt>Strategy</dt><dd>${escapeHtml(model.workspace.strategy)}</dd><dt>Workspace</dt><dd>${escapeHtml(model.workspace.workspaceId)} (${escapeHtml(model.workspace.state)})</dd><dt>Source revision</dt><dd><code>${escapeHtml(model.workspace.sourceRevision ?? "unavailable")}</code></dd><dt>Prepared revision</dt><dd><code>${escapeHtml(model.workspace.preparedRevision ?? "unavailable")}</code></dd><dt>Dirty source acknowledged</dt><dd>${escapeHtml(model.workspace.dirtyBaseAcknowledged)}</dd><dt>Retention</dt><dd>${escapeHtml(model.workspace.retention)}${model.workspace.retentionReason ? ` — ${escapeHtml(model.workspace.retentionReason)}` : ""}</dd><dt>Inherited results</dt><dd><pre>${escapeHtml(JSON.stringify(model.workspace.inheritedResults, null, 2))}</pre></dd></dl>${model.workspace.preparation.map((item, index) => processHtml(`Preparation ${index + 1}`, processView(item))).join("")}</section>` : ""}
+${model.changeArtifact ? `<section><h2>Durable change artifact</h2><dl><dt>State</dt><dd>${escapeHtml(model.changeArtifact.state)}</dd><dt>Applicable</dt><dd>${escapeHtml(model.changeArtifact.applicable)}</dd><dt>Result revision</dt><dd><code>${escapeHtml(model.changeArtifact.resultRevision ?? "none")}</code></dd><dt>Result ref</dt><dd><code>${escapeHtml(model.changeArtifact.resultRef ?? "none")}</code></dd><dt>Patch</dt><dd><code>${escapeHtml(model.changeArtifact.patchArtifact ?? "none")}</code></dd><dt>Preview</dt><dd><code>${escapeHtml(model.changeArtifact.previewArtifact ?? "none")}</code></dd>${model.changeArtifact.ineligibleReason ? `<dt>Ineligible reason</dt><dd>${escapeHtml(model.changeArtifact.ineligibleReason)}</dd>` : ""}</dl><h3>Captured changes</h3><pre>${escapeHtml(JSON.stringify(model.changeArtifact.changes, null, 2))}</pre><h3>Omitted sensitive paths</h3><pre>${escapeHtml(JSON.stringify(model.changeArtifact.omittedSensitive, null, 2))}</pre></section>` : ""}
+${model.promotions.length > 0 ? `<section><h2>Promotion history</h2><table><thead><tr><th>ID</th><th>Kind</th><th>Status</th><th>Target</th><th>Pre/post revisions</th><th>Conflicts</th></tr></thead><tbody>${model.promotions.map((item) => `<tr><td>${escapeHtml(item.promotionId)}</td><td>${escapeHtml(item.kind)}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.targetBranch ?? "")}</td><td><code>${escapeHtml(item.preApplyRevision ?? "")} / ${escapeHtml(item.postApplyRevision ?? "")}</code></td><td>${escapeHtml(item.conflictPaths.join(", "))}</td></tr>`).join("")}</tbody></table></section>` : ""}
 <section><h2>Run lifecycle</h2><table><thead><tr><th>Stage</th><th>Time</th><th>Detail</th></tr></thead><tbody>${model.lifecycle.map((event) => `<tr><td>${escapeHtml(event.stage)}</td><td>${escapeHtml(event.at)}</td><td>${escapeHtml(event.detail ?? "")}</td></tr>`).join("") || "<tr><td colspan=3>Legacy run lifecycle unavailable</td></tr>"}</tbody></table></section>
 <section><h2>Run failures</h2><pre>${escapeHtml(model.failures.join("\n") || "None")}</pre></section>
 ${model.tasks.map((task) => `<article class="card ${task.outcome === "passed" ? "pass" : "fail"}"><h2>${escapeHtml(task.id)} — ${escapeHtml(task.name)}</h2><div class="grid"><div><strong>Outcome</strong>${escapeHtml(task.outcome)}</div><div><strong>Duration</strong>${escapeHtml(duration(task.durationMs))}</div><div><strong>Policy score</strong>${escapeHtml(task.score)}</div><div><strong>Changed files</strong>${escapeHtml(task.changedFiles.length)}</div><div><strong>Diff lines</strong>${escapeHtml(task.diffLineCount)}</div></div>

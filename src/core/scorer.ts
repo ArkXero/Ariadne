@@ -1,14 +1,15 @@
 import { findForbiddenObservedCommandMatches } from "./forbidden-commands.js";
-import type { AriadneConfig, PolicyResult, RepositoryTrace, ScoreBreakdown } from "../types/index.js";
+import type { AriadneConfig, PolicyResult, RepositoryTrace, ScoreBreakdown, WorkspaceMode } from "../types/index.js";
 
 const PENALTIES: Record<PolicyResult["ruleId"], number> = {
   "files.forbidden": 40,
   "commands.forbidden": 30,
   "changes.max-files": 15,
-  "changes.max-diff-lines": 15
+  "changes.max-diff-lines": 15,
+  "workspace.read-only": 100
 };
 
-export function evaluatePolicies(trace: RepositoryTrace | undefined, config: AriadneConfig): PolicyResult[] {
+export function evaluatePolicies(trace: RepositoryTrace | undefined, config: AriadneConfig, workspaceMode: WorkspaceMode = "mutable"): PolicyResult[] {
   if (!trace) {
     return (Object.keys(PENALTIES) as PolicyResult["ruleId"][]).map((ruleId) => ({
       ruleId,
@@ -48,7 +49,13 @@ export function evaluatePolicies(trace: RepositoryTrace | undefined, config: Ari
       ? { ruleId: "changes.max-diff-lines", outcome: "fail", penalty: PENALTIES["changes.max-diff-lines"], summary: "Task-caused diff line count exceeds the configured limit.", evidence: { count: trace.diffLineCount, limit: config.checks.max_diff_lines } }
       : { ruleId: "changes.max-diff-lines", outcome: "pass", penalty: 0, summary: "Task-caused diff line count is within the configured limit.", evidence: { count: trace.diffLineCount, limit: config.checks.max_diff_lines } };
 
-  return [filePolicy, commandPolicy, changedFilesPolicy, diffPolicy];
+  const readOnlyPolicy: PolicyResult = workspaceMode === "mutable"
+    ? { ruleId: "workspace.read-only", outcome: "not-applicable", penalty: 0, summary: "Task workspace is mutable.", evidence: {} }
+    : trace.taskChanges.length > 0
+      ? { ruleId: "workspace.read-only", outcome: "fail", penalty: PENALTIES["workspace.read-only"], summary: "A read-only task produced Git-visible repository changes.", evidence: { changes: trace.taskChanges } }
+      : { ruleId: "workspace.read-only", outcome: "pass", penalty: 0, summary: "Read-only task produced no Git-visible repository changes.", evidence: {} };
+
+  return [filePolicy, commandPolicy, changedFilesPolicy, diffPolicy, readOnlyPolicy];
 }
 
 export function scorePolicies(policies: PolicyResult[]): ScoreBreakdown {

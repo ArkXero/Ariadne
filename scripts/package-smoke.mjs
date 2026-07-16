@@ -29,19 +29,32 @@ async function latestRecord(cwd) {
   return { pointer, record, manifestPath };
 }
 
+async function latestBatch(cwd) {
+  const pointer = JSON.parse(await readFile(path.join(cwd, ".ariadne", "batches", "latest.json"), "utf8"));
+  assert(typeof pointer.batchId === "string", "batch latest.json is missing batchId.");
+  assert(pointer.manifest === `${pointer.batchId}/batch.json`, `Batch latest pointer contradicts batchId: ${JSON.stringify(pointer)}`);
+  const manifestPath = path.join(cwd, ".ariadne", "batches", pointer.manifest);
+  const record = JSON.parse(await readFile(manifestPath, "utf8"));
+  assert(record.batchId === pointer.batchId, "Batch latest pointer references a contradictory manifest.");
+  return { pointer, record, manifestPath };
+}
+
 async function createFixture(name, options = {}) {
   const cwd = path.join(temporaryRoot, `fixture-${name}`);
   await mkdir(path.join(cwd, ".ariadne", "tasks"), { recursive: true });
-  await writeFile(path.join(cwd, ".gitignore"), ".ariadne/runs/\n.env\nnode_modules/\n");
+  await writeFile(path.join(cwd, ".gitignore"), ".ariadne/runs/\n.ariadne/batches/\n.ariadne/worktrees/\n.ariadne/promotions/\n.ariadne/latest.json\n.env\nnode_modules/\n");
   await writeFile(path.join(cwd, "target.txt"), "committed\n");
   await writeFile(path.join(cwd, "agent.mjs"), options.agentSource ?? "process.stdin.resume();\n");
   await writeFile(path.join(cwd, ".ariadne", "tasks", "task.yml"), `${JSON.stringify({
     id: "task",
     name: options.taskName ?? name,
-    prompt: `Run the deterministic ${name} package fixture.`
+    prompt: `Run the deterministic ${name} package fixture.`,
+    dependsOn: [],
+    workspaceMode: "mutable",
+    retry: options.retry ?? { attempts: 1, delayMs: 0, backoff: "fixed" }
   }, null, 2)}\n`);
   await writeFile(path.join(cwd, "ariadne.yml"), `${JSON.stringify({
-    version: 2,
+    version: 4,
     agent: {
       command: { kind: "exec", file: "node", args: ["agent.mjs"] },
       timeout_ms: options.timeoutMs ?? 1_000
@@ -51,7 +64,11 @@ async function createFixture(name, options = {}) {
       commands: options.verification ?? [],
       timeout_ms: options.verificationTimeoutMs ?? 1_000
     },
-    execution: { termination_grace_ms: 100 },
+    execution: {
+      termination_grace_ms: 100, concurrency: options.concurrency ?? 1, failure_mode: options.failureMode ?? "continue",
+      isolation: options.isolation ?? "shared",
+      worktree: { retention: options.retention ?? "on-failure", preparation: { commands: options.preparation ?? [], timeout_ms: 1_000 } }
+    },
     checks: {
       forbidden_files: options.forbiddenFiles ?? [],
       forbidden_commands: options.forbiddenCommands ?? [],
@@ -112,6 +129,10 @@ try {
     || name.startsWith("tests/")
     || name.startsWith("scripts/")
     || name.includes("task-validation")
+    || name.includes("trace-schema")
+    || name === "dist/schema/report.js"
+    || name === "dist/schema/report.d.ts"
+    || name === "dist/schema/report.js.map"
     || /(^|\/)(?:\.ariadne|\.env(?:\..*)?|\.DS_Store|\.idea|\.vscode)(?:\/|$)/.test(name)
     || /\.(?:swp|swo|tmp)$/.test(name)
   );
@@ -140,11 +161,22 @@ try {
 
   const help = run(binary, ["--help"], installRoot);
   assert(help.stdout.includes("Usage: ariadne"), "Installed CLI help output was invalid.");
-  for (const command of ["init", "doctor", "run", "list", "report"]) {
+  for (const command of ["init", "doctor", "plan", "run", "resume", "rerun", "list", "report", "changes", "diff", "status", "apply", "discard", "worktree"]) {
     assert(run(binary, [command, "--help"], installRoot).stdout.includes(`Usage: ariadne ${command}`), `Installed ${command} help was invalid.`);
+  }
+  for (const command of ["list", "remove", "clean"]) {
+    assert(run(binary, ["worktree", command, "--help"], installRoot).stdout.includes(`Usage: ariadne worktree ${command}`), `Installed worktree ${command} help was invalid.`);
   }
   const version = run(binary, ["--version"], installRoot).stdout.trim();
   assert(version === installedPackage.version, `Installed CLI version ${version} does not match package ${installedPackage.version}`);
+  for (const args of [
+    ["plan", "--all", "--concurrency", "33"],
+    ["plan", "--all", "--failure-mode", "stop"],
+    ["plan", "--all", "--isolation", "container"],
+    ["list", "--format", "xml"]
+  ]) {
+    run(binary, args, installRoot, 2);
+  }
 
   const passing = path.join(temporaryRoot, "fixture-passing");
   await mkdir(passing);
@@ -153,17 +185,24 @@ try {
   const hostileName = "=2+3 | <script>alert(1)</script><img src=x onerror=alert(1)>";
   await writeFile(path.join(passing, ".ariadne", "tasks", "example.yml"), `${JSON.stringify({ id: "example", name: hostileName, prompt: "Complete the installed-package task." }, null, 2)}\n`);
   run(binary, ["doctor", "--quiet"], passing);
+  const planned = JSON.parse(run(binary, ["plan", "--all", "--json"], passing).stdout);
+  assert(planned.order?.join(",") === "example", "Installed workflow plan was invalid.");
   const terminalRun = run(binary, ["run", "--quiet"], passing);
   assert(terminalRun.stdout.includes("Status: completed") && terminalRun.stdout.includes("Outcome: passed"), `Terminal run contradicted a passing result: ${terminalRun.stdout}`);
   const first = await latestRecord(passing);
+  const firstBatch = await latestBatch(passing);
   const jsonRun = run(binary, ["run", "--json"], passing);
   const runJson = JSON.parse(jsonRun.stdout);
   assert(runJson.status === "completed" && runJson.outcome === "passed", `JSON run contradicted a passing result: ${jsonRun.stdout}`);
   assert(jsonRun.stderr.includes("Running task: example"), "JSON mode did not route progress to stderr.");
   assert(!jsonRun.stdout.includes(passing), "JSON stdout leaked the absolute fixture path.");
   const second = await latestRecord(passing);
+  const secondBatch = await latestBatch(passing);
   assert(first.record.runId !== second.record.runId, "Consecutive runs reused a run ID.");
-  assert(second.record.summary.outcome === runJson.outcome, "Persisted record and run JSON disagree on outcome.");
+  assert(firstBatch.record.batchId !== secondBatch.record.batchId, "Consecutive workflows reused a batch ID.");
+  assert(secondBatch.record.kind === "batch" && secondBatch.record.runId === secondBatch.record.batchId && secondBatch.record.status === "completed" && secondBatch.record.batchStatus === "succeeded" && secondBatch.record.outcome === "passed", "Batch compatibility aliases are invalid.");
+  assert(secondBatch.record.lifecycle.some((event) => event.taskId === "example" && event.detail?.includes("Attempt 1 started")), "Batch lifecycle is missing task-attempt checkpoints.");
+  assert(secondBatch.record.summary.outcome === runJson.outcome && secondBatch.record.batchId === runJson.batchId, "Persisted batch and run JSON disagree.");
 
   await writeFile(path.join(passing, ".ariadne", "runs", "broken.json"), "{broken");
   const listJsonResult = run(binary, ["list", "--format", "json"], passing);
@@ -174,18 +213,86 @@ try {
   const listMarkdown = run(binary, ["list", "--format", "markdown", "--quiet"], passing).stdout;
   assert(listCsv.includes("completed,passed") && listCsv.includes("'=2+3"), "CSV output contradicts status or failed formula neutralization.");
   assert(listMarkdown.includes("completed | passed") && listMarkdown.includes("\\|"), "Markdown output contradicts status or failed pipe escaping.");
+  const batchList = JSON.parse(run(binary, ["list", "--batches", "--format", "json", "--quiet"], passing).stdout);
+  assert(batchList[0]?.batch_id === secondBatch.record.batchId && batchList[0]?.status === "succeeded", "Batch history contradicts latest batch.");
   const reportResult = run(binary, ["report", "--json", "--quiet"], passing);
   const reportJson = JSON.parse(reportResult.stdout);
-  assert(reportJson.runId === second.record.runId && reportJson.status === "completed" && reportJson.outcome === "passed", "Report JSON contradicts latest.json or the persisted record.");
+  assert(reportJson.batchId === secondBatch.record.batchId && reportJson.status === "completed" && reportJson.outcome === "passed", "Report JSON contradicts latest invocation or batch record.");
   assert(reportJson.tasks[0]?.name === hostileName && reportJson.tasks[0]?.score === second.record.results[0].score.value, "Report JSON contradicts persisted task data.");
-  const htmlPath = path.join(passing, ".ariadne", "runs", second.record.runId, "report.html");
+  const htmlPath = path.join(passing, ".ariadne", "batches", secondBatch.record.batchId, "report.html");
   const html = await readFile(htmlPath, "utf8");
   assert(!html.includes("<script>alert(1)</script>") && !html.includes("onerror=alert(1)>") && html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"), "HTML report failed hostile-content escaping.");
-  assert(html.includes("completed") && html.includes("passed") && html.includes(String(second.record.results[0].score.value)), "HTML report contradicts the canonical status or score.");
+  assert(html.includes("succeeded") && html.includes("passed") && html.includes(String(second.record.results[0].score.value)), "HTML report contradicts the canonical status or score.");
+
+  const isolated = await createFixture("isolated", {
+    isolation: "worktree", retention: "never",
+    agentSource: "import { appendFile } from 'node:fs/promises'; process.stdin.resume(); await appendFile('target.txt', 'isolated\\n');\n"
+  });
+  await mkdir(path.join(isolated, "node_modules", "fixture"), { recursive: true });
+  await writeFile(path.join(isolated, "node_modules", "fixture", "index.js"), "ignored fixture\n");
+  const isolatedDoctor = run(binary, ["doctor", "--json"], isolated);
+  const isolatedDoctorReport = JSON.parse(isolatedDoctor.stdout);
+  assert(isolatedDoctorReport.checks.find((check) => check.id === "worktree.source-clean")?.status === "pass", "Ignored node_modules made installed doctor report a dirty repository.");
+  run(binary, ["run", "--quiet"], isolated);
+  const isolatedRun = (await latestRecord(isolated)).record;
+  assert(isolatedRun.workspace?.strategy === "worktree" && isolatedRun.changeArtifact?.applicable === true, "Installed worktree run did not persist an applicable result.");
+  assert(await readFile(path.join(isolated, "target.txt"), "utf8") === "committed\n", "Isolated run mutated the primary checkout.");
+  const changes = JSON.parse(run(binary, ["changes", isolatedRun.runId, "--json"], isolated).stdout);
+  assert(changes.changes.some((change) => change.path === "target.txt") && changes.promotion === "unapplied", "Installed changes view contradicted the result artifact.");
+  const unapplied = JSON.parse(run(binary, ["list", "--unapplied", "--json", "--quiet"], isolated).stdout);
+  assert(unapplied.length === 1 && unapplied[0].run_id === isolatedRun.runId && unapplied[0].promotion === "unapplied", "Installed unapplied history filter was inconsistent.");
+  run(binary, ["diff", isolatedRun.runId, "--output", ".ariadne/export/result.patch", "--quiet"], isolated);
+  assert((await readFile(path.join(isolated, ".ariadne", "export", "result.patch"), "utf8")).includes("target.txt"), "Installed diff did not copy the complete safe patch.");
+  run(binary, ["apply", isolatedRun.runId, "--quiet"], isolated);
+  assert(await readFile(path.join(isolated, "target.txt"), "utf8") === "committed\nisolated\n", "Installed clean promotion did not update the primary checkout.");
+  assert(JSON.parse(run(binary, ["status", isolatedRun.runId, "--json"], isolated).stdout).promotion === "applied", "Installed status did not report the applied result.");
+  const appliedHistory = JSON.parse(run(binary, ["list", "--applied", "--json", "--quiet"], isolated).stdout);
+  assert(appliedHistory.length === 1 && appliedHistory[0].run_id === isolatedRun.runId && appliedHistory[0].promotion === "applied", "Installed applied history filter was inconsistent.");
+
+  const conflict = await createFixture("conflict", {
+    isolation: "worktree", retention: "never",
+    agentSource: "import { writeFile } from 'node:fs/promises'; process.stdin.resume(); await writeFile('target.txt', 'result\\n');\n"
+  });
+  run(binary, ["run", "--quiet"], conflict);
+  const conflictRun = (await latestRecord(conflict)).record;
+  await writeFile(path.join(conflict, "target.txt"), "primary\n");
+  run("git", ["add", "target.txt"], conflict);
+  run("git", ["-c", "user.name=Ariadne Package", "-c", "user.email=package@example.test", "commit", "--quiet", "-m", "advance"], conflict);
+  run(binary, ["apply", conflictRun.runId, "--quiet"], conflict, 15);
+  assert(await readFile(path.join(conflict, "target.txt"), "utf8") === "primary\n", "Promotion conflict changed the primary checkout.");
+
+  const discarded = await createFixture("discard", {
+    isolation: "worktree", retention: "always",
+    agentSource: "import { appendFile } from 'node:fs/promises'; process.stdin.resume(); await appendFile('target.txt', 'discard\\n');\n"
+  });
+  run(binary, ["run", "--quiet"], discarded);
+  const discardedRun = (await latestRecord(discarded)).record;
+  run(binary, ["discard", discardedRun.runId, "--quiet"], discarded);
+  assert(JSON.parse(run(binary, ["status", discardedRun.runId, "--json"], discarded).stdout).promotion === "discarded", "Installed discard status was inconsistent.");
+  const discardedHistory = JSON.parse(run(binary, ["list", "--discarded", "--json", "--quiet"], discarded).stdout);
+  assert(discardedHistory.length === 1 && discardedHistory[0].run_id === discardedRun.runId && discardedHistory[0].promotion === "discarded", "Installed discarded history filter was inconsistent.");
+  const discardedWorkspace = JSON.parse(await readFile(path.join(discarded, discardedRun.workspace.metadataPath), "utf8"));
+  assert(discardedWorkspace.state === "removed", "Installed discard did not remove its retained managed worktree.");
+  await mkdir(path.join(discarded, ".ariadne", "worktrees", "corrupt"), { recursive: true });
+  await writeFile(path.join(discarded, ".ariadne", "worktrees", "corrupt", "workspace.json"), "{broken");
+  const worktrees = JSON.parse(run(binary, ["worktree", "list", "--json"], discarded).stdout);
+  assert(worktrees.some((item) => item.warning), "Corrupt workspace metadata was not warned and skipped.");
+  run(binary, ["worktree", "clean", "--dry-run", "--quiet"], discarded);
 
   const agentFailure = await createFixture("agent-failure", { agentSource: "process.exit(7);\n" });
   run(binary, ["run", "--quiet"], agentFailure, 10);
   assert((await latestRecord(agentFailure)).record.summary.outcome === "agent_failed", "Agent failure was not persisted.");
+
+  const preparationFailure = await createFixture("preparation-failure", {
+    isolation: "worktree",
+    preparation: [{ kind: "exec", file: "node", args: ["-e", "process.exit(9)"] }]
+  });
+  const preparationResult = run(binary, ["run", "--quiet"], preparationFailure, 14);
+  assert(preparationResult.stdout.includes("Outcome: preparation_failed"), "Preparation failure terminal output contradicted its outcome.");
+  const preparationRecord = (await latestRecord(preparationFailure)).record;
+  const preparationBatch = (await latestBatch(preparationFailure)).record;
+  assert(preparationRecord.summary.outcome === "preparation_failed", "Preparation failure child record was not persisted correctly.");
+  assert(preparationBatch.outcome === "preparation_failed" && preparationBatch.summary.outcome === "preparation_failed", "Preparation failure batch aggregation contradicted its child attempt.");
 
   const verificationFailure = await createFixture("verification-failure", {
     verification: [{ kind: "exec", file: "node", args: ["-e", "process.exit(2)"] }]
@@ -219,6 +326,32 @@ try {
   assert(timeoutRecord.status === "failed" && timeoutRecord.summary.outcome === "timeout", "Timeout terminal state was not persisted.");
   assert(timeoutRecord.results[0].agent.timedOut && timeoutRecord.results[0].agent.cleanup.attempted, "Timeout cleanup metadata is missing.");
 
+  const retry = await createFixture("retry", {
+    retry: { attempts: 2, delayMs: 1, backoff: "fixed" },
+    agentSource: "import { readFile, writeFile } from 'node:fs/promises'; const p='.ariadne/retry-count'; const n=Number(await readFile(p,'utf8').catch(()=>0))+1; await writeFile(p,String(n)); if(n===1) process.exit(7);\n"
+  });
+  run(binary, ["run", "--quiet"], retry);
+  const retryBatch = (await latestBatch(retry)).record;
+  assert(retryBatch.batchStatus === "succeeded_with_warnings" && retryBatch.tasks[0].attempts.length === 2, "Installed retry workflow did not preserve two attempts.");
+
+  const dependency = await createFixture("dependency", { agentSource: "if(process.env.ARIADNE_TASK_ID==='task') process.exit(7);\n" });
+  await writeFile(path.join(dependency, ".ariadne", "tasks", "dependent.yml"), `${JSON.stringify({ id: "dependent", dependsOn: ["task"], prompt: "Must remain blocked." }, null, 2)}\n`);
+  run(binary, ["run", "--quiet"], dependency, 10);
+  const dependencyBatch = (await latestBatch(dependency)).record;
+  assert(dependencyBatch.tasks.find((task) => task.id === "dependent")?.state === "blocked", "Dependency failure did not block its dependent.");
+
+  const resumable = await createFixture("resume", { agentSource: "import { readFile } from 'node:fs/promises'; if((await readFile('mode.txt','utf8')).trim()==='fail') process.exit(7);\n" });
+  await writeFile(path.join(resumable, "mode.txt"), "fail\n");
+  run(binary, ["run", "--quiet"], resumable, 10);
+  const sourceBatch = (await latestBatch(resumable)).record;
+  await writeFile(path.join(resumable, "mode.txt"), "pass\n");
+  run(binary, ["resume", sourceBatch.batchId, "--quiet"], resumable);
+  const resumedBatch = (await latestBatch(resumable)).record;
+  assert(resumedBatch.relation?.kind === "resume" && resumedBatch.tasks[0].attempts.length === 2, "Installed resume did not preserve prior attempts.");
+  run(binary, ["rerun", sourceBatch.batchId, "--failed", "--quiet"], resumable);
+  const rerunBatch = (await latestBatch(resumable)).record;
+  assert(rerunBatch.relation?.kind === "rerun" && rerunBatch.batchStatus === "succeeded", "Installed rerun did not create a successful related batch.");
+
   let interruption = "skipped-windows";
   if (process.platform !== "win32") {
     const interrupted = await createFixture("interrupted", {
@@ -227,12 +360,14 @@ try {
     });
     await interruptInstalledRun(installedCli, interrupted);
     const interruptedRecord = (await latestRecord(interrupted)).record;
+    const interruptedBatch = (await latestBatch(interrupted)).record;
     assert(interruptedRecord.status === "interrupted" && interruptedRecord.summary.outcome === "interrupted", "Interruption terminal state was not persisted.");
     assert(interruptedRecord.failures.some((failure) => failure.code === "RUN_INTERRUPTED"), "Interruption failure metadata is missing.");
+    assert(interruptedBatch.status === "interrupted", "Interrupted batch terminal state was not persisted.");
     interruption = "passed";
   }
 
-  console.log(`packed package flow ok: ${metadata.filename} (${metadata.entryCount} files; scenarios=pass,agent,verification,policy,dirty,timeout; interruption=${interruption})`);
+  console.log(`packed package flow ok: ${metadata.filename} (${metadata.entryCount} files; scenarios=pass,usage,worktree,ignored,apply,conflict,discard,cleanup,agent,preparation,verification,policy,dirty,timeout,retry,dependency,resume,rerun; interruption=${interruption})`);
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
 }

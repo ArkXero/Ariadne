@@ -69,6 +69,7 @@ try {
   run(process.execPath, [cliPath, "--", "--help"], passing);
   run(process.execPath, [cliPath, "init"], passing);
   run(process.execPath, [cliPath, "doctor", "--quiet"], passing);
+  run(process.execPath, [cliPath, "plan", "--all", "--json"], passing);
   run(process.execPath, [cliPath, "run", "--quiet"], passing);
   const jsonList = run(process.execPath, [cliPath, "list", "--json", "--quiet"], passing);
   JSON.parse(jsonList.stdout);
@@ -77,7 +78,7 @@ try {
   run(process.execPath, [cliPath, "list", "--format", "markdown", "--quiet"], passing);
   run(process.execPath, [cliPath, "report", "--quiet"], passing);
   const passingRecord = JSON.parse(await readFile(await latestManifest(passing), "utf8"));
-  if (passingRecord.schemaVersion !== 2 || passingRecord.summary.outcome !== "passed") throw new Error(`Passing run was invalid: ${JSON.stringify(passingRecord.summary)}`);
+  if (passingRecord.schemaVersion !== 4 || passingRecord.summary.outcome !== "passed" || !passingRecord.workflow?.batchId) throw new Error(`Passing run was invalid: ${JSON.stringify(passingRecord.summary)}`);
   console.log(`passing flow ok: ${passing}`);
 
   const forbidden = await temporary("ariadne-forbidden-");

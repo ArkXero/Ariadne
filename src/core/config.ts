@@ -10,10 +10,12 @@ import {
   type ProcessSpec
 } from "../types/index.js";
 
-const MAX_TIMEOUT_MS = 86_400_000;
+export const MAX_TIMEOUT_MS = 86_400_000;
+export const MAX_CONCURRENCY = 32;
 const DEFAULT_AGENT_TIMEOUT_MS = 600_000;
 const DEFAULT_VERIFICATION_TIMEOUT_MS = 300_000;
 const DEFAULT_TERMINATION_GRACE_MS = 2_000;
+const DEFAULT_PREPARATION_TIMEOUT_MS = 600_000;
 
 const NonEmptyString = z.string().trim().min(1);
 const TimeoutSchema = z.number().int().min(1).max(MAX_TIMEOUT_MS);
@@ -39,7 +41,7 @@ const ChecksSchema = z.object({
   forbidden_commands: []
 });
 
-const V2ConfigSchema = z.object({
+const V4ConfigSchema = z.object({
   version: z.literal(CURRENT_CONFIG_VERSION),
   agent: z.object({
     command: ProcessSpecSchema,
@@ -53,8 +55,40 @@ const V2ConfigSchema = z.object({
     timeout_ms: TimeoutSchema.default(DEFAULT_VERIFICATION_TIMEOUT_MS)
   }).strict().default({ commands: [], timeout_ms: DEFAULT_VERIFICATION_TIMEOUT_MS }),
   execution: z.object({
-    termination_grace_ms: z.number().int().min(100).max(30_000).default(DEFAULT_TERMINATION_GRACE_MS)
-  }).strict().default({ termination_grace_ms: DEFAULT_TERMINATION_GRACE_MS }),
+    termination_grace_ms: z.number().int().min(100).max(30_000).default(DEFAULT_TERMINATION_GRACE_MS),
+    concurrency: z.number().int().min(1).max(MAX_CONCURRENCY).default(1),
+    failure_mode: z.enum(["continue", "fail-fast"]).default("continue"),
+    isolation: z.enum(["shared", "worktree"]).default("shared"),
+    worktree: z.object({
+      retention: z.enum(["always", "on-failure", "never"]).default("on-failure"),
+      preparation: z.object({
+        commands: z.array(ProcessSpecSchema).default([]),
+        timeout_ms: TimeoutSchema.default(DEFAULT_PREPARATION_TIMEOUT_MS)
+      }).strict().default({ commands: [], timeout_ms: DEFAULT_PREPARATION_TIMEOUT_MS })
+    }).strict().default({ retention: "on-failure", preparation: { commands: [], timeout_ms: DEFAULT_PREPARATION_TIMEOUT_MS } })
+  }).strict().default({ termination_grace_ms: DEFAULT_TERMINATION_GRACE_MS, concurrency: 1, failure_mode: "continue", isolation: "shared", worktree: { retention: "on-failure", preparation: { commands: [], timeout_ms: DEFAULT_PREPARATION_TIMEOUT_MS } } }),
+  checks: ChecksSchema
+}).strict();
+
+const V3ConfigSchema = z.object({
+  version: z.literal(3),
+  agent: z.object({ command: ProcessSpecSchema, timeout_ms: TimeoutSchema.default(DEFAULT_AGENT_TIMEOUT_MS) }).strict(),
+  tasks: z.object({ directory: NonEmptyString.default(".ariadne/tasks") }).strict().default({ directory: ".ariadne/tasks" }),
+  verification: z.object({ commands: z.array(ProcessSpecSchema).default([]), timeout_ms: TimeoutSchema.default(DEFAULT_VERIFICATION_TIMEOUT_MS) }).strict().default({ commands: [], timeout_ms: DEFAULT_VERIFICATION_TIMEOUT_MS }),
+  execution: z.object({
+    termination_grace_ms: z.number().int().min(100).max(30_000).default(DEFAULT_TERMINATION_GRACE_MS),
+    concurrency: z.number().int().min(1).max(MAX_CONCURRENCY).default(1),
+    failure_mode: z.enum(["continue", "fail-fast"]).default("continue")
+  }).strict().default({ termination_grace_ms: DEFAULT_TERMINATION_GRACE_MS, concurrency: 1, failure_mode: "continue" }),
+  checks: ChecksSchema
+}).strict();
+
+const V2ConfigSchema = z.object({
+  version: z.literal(2),
+  agent: z.object({ command: ProcessSpecSchema, timeout_ms: TimeoutSchema.default(DEFAULT_AGENT_TIMEOUT_MS) }).strict(),
+  tasks: z.object({ directory: NonEmptyString.default(".ariadne/tasks") }).strict().default({ directory: ".ariadne/tasks" }),
+  verification: z.object({ commands: z.array(ProcessSpecSchema).default([]), timeout_ms: TimeoutSchema.default(DEFAULT_VERIFICATION_TIMEOUT_MS) }).strict().default({ commands: [], timeout_ms: DEFAULT_VERIFICATION_TIMEOUT_MS }),
+  execution: z.object({ termination_grace_ms: z.number().int().min(100).max(30_000).default(DEFAULT_TERMINATION_GRACE_MS) }).strict().default({ termination_grace_ms: DEFAULT_TERMINATION_GRACE_MS }),
   checks: ChecksSchema
 }).strict();
 
@@ -90,7 +124,7 @@ function validationError(source: string, error: z.ZodError): AriadneError {
     stage: "loading",
     source,
     message: `Invalid Ariadne configuration:\n${issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n")}`,
-    expected: `A strict Ariadne configuration with version ${CURRENT_CONFIG_VERSION}, or a compatible v1 configuration.`,
+    expected: `A strict Ariadne configuration with version ${CURRENT_CONFIG_VERSION}, or a compatible versionless, v1, v2, or v3 configuration.`,
     correction: "Fix the listed fields and run \"ariadne doctor\" again.",
     details: { issues }
   });
@@ -116,9 +150,30 @@ function normalizeLegacyConfig(
       commands: config.verification.commands.map(asLegacyShell),
       timeout_ms: config.verification.timeout_ms
     },
-    execution: { termination_grace_ms: DEFAULT_TERMINATION_GRACE_MS },
+    execution: legacyExecution({ termination_grace_ms: DEFAULT_TERMINATION_GRACE_MS, concurrency: 1, failure_mode: "continue" }),
     checks: config.checks
   };
+}
+
+function normalizeV2Config(config: z.infer<typeof V2ConfigSchema>): AriadneConfig {
+  return {
+    ...config,
+    version: CURRENT_CONFIG_VERSION,
+    sourceVersion: 2,
+    execution: legacyExecution({ ...config.execution, concurrency: 1, failure_mode: "continue" })
+  };
+}
+
+function legacyExecution(execution: { termination_grace_ms: number; concurrency: number; failure_mode: "continue" | "fail-fast" }): AriadneConfig["execution"] {
+  return {
+    ...execution,
+    isolation: "shared",
+    worktree: { retention: "on-failure", preparation: { commands: [], timeout_ms: DEFAULT_PREPARATION_TIMEOUT_MS } }
+  };
+}
+
+function normalizeV3Config(config: z.infer<typeof V3ConfigSchema>): AriadneConfig {
+  return { ...config, version: CURRENT_CONFIG_VERSION, sourceVersion: 3, execution: legacyExecution(config.execution) };
 }
 
 function freezeDeep<T>(value: T): T {
@@ -250,9 +305,19 @@ export async function loadConfig(cwd: string, configPath = "ariadne.yml"): Promi
   const warnings: string[] = [];
 
   if (rawVersion === CURRENT_CONFIG_VERSION) {
-    const parsed = V2ConfigSchema.safeParse(rawConfig);
+    const parsed = V4ConfigSchema.safeParse(rawConfig);
     if (!parsed.success) throw validationError(resolvedPath, parsed.error);
     config = { ...parsed.data, sourceVersion: CURRENT_CONFIG_VERSION };
+  } else if (rawVersion === 3) {
+    const parsed = V3ConfigSchema.safeParse(rawConfig);
+    if (!parsed.success) throw validationError(resolvedPath, parsed.error);
+    config = normalizeV3Config(parsed.data);
+    warnings.push("Configuration version 3 is deprecated; migrate to version 4 for explicit workspace isolation and change promotion. V3 parallelSafe: true tasks adapt to workspaceMode: read-only.");
+  } else if (rawVersion === 2) {
+    const parsed = V2ConfigSchema.safeParse(rawConfig);
+    if (!parsed.success) throw validationError(resolvedPath, parsed.error);
+    config = normalizeV2Config(parsed.data);
+    warnings.push("Configuration version 2 is deprecated; migrate to version 4 for workflows and isolated execution.");
   } else if (rawVersion === undefined || rawVersion === 1) {
     const parsed = LegacyConfigSchema.safeParse(rawConfig);
     if (!parsed.success) throw validationError(resolvedPath, parsed.error);
@@ -260,8 +325,8 @@ export async function loadConfig(cwd: string, configPath = "ariadne.yml"): Promi
     config = normalizeLegacyConfig(parsed.data, sourceVersion);
     warnings.push(
       sourceVersion === "versionless"
-        ? "Versionless configuration is deprecated; add version: 2 and migrate commands to explicit process specs."
-        : "Configuration version 1 is deprecated; migrate command strings to version 2 process specs."
+        ? "Versionless configuration is deprecated; migrate to version 4 and explicit process specs."
+        : "Configuration version 1 is deprecated; migrate command strings to version 4 process specs."
     );
   } else if (typeof rawVersion !== "number" || !Number.isInteger(rawVersion)) {
     throw new AriadneError({
@@ -284,7 +349,7 @@ export async function loadConfig(cwd: string, configPath = "ariadne.yml"): Promi
       message: `Configuration version ${rawVersion} is not supported.`,
       fieldPath: "version",
       offendingValue: rawVersion,
-      expected: `Configuration version 1 or ${CURRENT_CONFIG_VERSION}.`,
+      expected: `Configuration version 1, 2, 3, or ${CURRENT_CONFIG_VERSION}.`,
       correction: rawVersion > CURRENT_CONFIG_VERSION
         ? "Upgrade Ariadne to a version that supports this configuration."
         : `Migrate the configuration to version ${CURRENT_CONFIG_VERSION}.`

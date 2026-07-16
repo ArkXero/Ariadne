@@ -182,12 +182,13 @@ export async function captureRepositorySnapshot(cwd: string, excludedPrefixes: s
   }
   const repositoryPrefix = prefix.exitCode === 0 ? prefix.stdout.trim().replace(/\\/g, "/") : "";
   const entries = (await parsePorcelain(cwd, status.stdout, repositoryPrefix)).filter((entry) => !excluded(entry.path, excludedPrefixes));
+  const dirtyEntries = entries.filter((entry) => entry.changeType !== "ignored");
   return {
     available: true,
     head: head.exitCode === 0 ? head.stdout.trim() : undefined,
     branch: branch.exitCode === 0 ? branch.stdout.trim() : undefined,
     detached: branch.exitCode !== 0,
-    dirty: entries.length > 0,
+    dirty: dirtyEntries.length > 0,
     entries,
     diffLineCount: countDiffChangedLines(diff)
   };
