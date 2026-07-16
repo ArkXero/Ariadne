@@ -116,8 +116,8 @@ export async function diagnoseRepository(cwd: string, configPath = "ariadne.yml"
   let loaded: Awaited<ReturnType<typeof loadConfig>>;
   try {
     loaded = await loadConfig(cwd, configPath);
-    checks.push(check("config.load", "pass", `Configuration version ${loaded.config.sourceVersion} loaded and normalized to v3.`, undefined, loaded.path));
-    for (const warning of loaded.warnings) checks.push(check("config.compatibility", "warning", warning, "Migrate the configuration to version 3."));
+    checks.push(check("config.load", "pass", `Configuration version ${loaded.config.sourceVersion} loaded and normalized to v${loaded.config.version}.`, undefined, loaded.path));
+    for (const warning of loaded.warnings) checks.push(check("config.compatibility", "warning", warning, `Migrate the configuration to version ${loaded.config.version}.`));
   } catch (error) {
     const message = error instanceof AriadneError ? formatAriadneError(error, verbose) : error instanceof Error ? verbose && error.stack ? error.stack : error.message : String(error);
     checks.push(check("config.load", "fail", message, "Fix the configuration and run doctor again."));

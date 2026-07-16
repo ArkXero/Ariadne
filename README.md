@@ -32,7 +32,11 @@ ariadne list --batches
 ariadne report
 ```
 
-`init` creates a v4 `ariadne.yml`, an example task, run/batch/worktree/promotion storage, and host `.gitignore` entries. Existing files are not overwritten.
+In an interactive terminal, `init` offers a repository-aware Default setup and a Custom setup. Default detects the project type, package manager, validation script, installed Codex/Claude Code executable, and Git worktree capability; it imports the strongest detected validation command as a task. Custom additionally configures task dependencies, isolation, concurrency, retries, sensitive-file protections, change limits, and timeouts, then provides YAML and file-diff review before writing.
+
+`ariadne init --yes` accepts detected defaults without prompts. Plain non-interactive `ariadne init` keeps the portable example-agent behavior used by automation. `--custom` requires a TTY.
+
+An existing `ariadne.yml` is never overwritten automatically. Interactive `init` defaults to validation and offers explicit Default/Custom replacement. Replacement always shows a diff, validates the proposal before touching the original, creates an ignored timestamped backup, and then performs atomic writes. Existing task files are never overwritten.
 
 ```yaml
 version: 4

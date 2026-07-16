@@ -32,6 +32,34 @@ describe("CLI integration", () => {
     }
   }, 20_000);
 
+  it("keeps non-interactive init portable and requires a TTY for custom setup", async () => {
+    const cwd = await tempDir();
+    await writeFile(path.join(cwd, "package.json"), JSON.stringify({ packageManager: "pnpm@10.34.1", scripts: { check: "pnpm test" } }));
+    const first = cli(cwd, ["init"]);
+    expect(first.status).toBe(0);
+    expect(first.stdout).toContain(".ariadne/tasks/example.yml created");
+    const generated = await readFile(path.join(cwd, "ariadne.yml"), "utf8");
+    expect(generated).toContain("file: node");
+    expect(generated).not.toContain("file: pnpm");
+    const before = await readFile(path.join(cwd, "ariadne.yml"), "utf8");
+    const second = cli(cwd, ["init"]);
+    expect(second.status).toBe(0);
+    expect(second.stderr).toContain("Nothing was changed");
+    expect(await readFile(path.join(cwd, "ariadne.yml"), "utf8")).toBe(before);
+    expect(cli(cwd, ["init", "--custom"]).status).toBe(2);
+  });
+
+  it("supports repository-aware detected defaults with init --yes", async () => {
+    const cwd = await tempDir();
+    await writeFile(path.join(cwd, "package.json"), JSON.stringify({ packageManager: "pnpm@10.34.1", scripts: { check: "node --check index.js", test: "node --test" }, devDependencies: { typescript: "^5.9.0" } }));
+    await writeFile(path.join(cwd, "tsconfig.json"), "{}\n");
+    const result = cli(cwd, ["init", "--yes", "--json"]);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ kind: "created", taskIds: ["check"], result: { config: "created", configurationValidated: true } });
+    expect(result.stdout).not.toContain(cwd);
+    expect(await readFile(path.join(cwd, ".ariadne", "tasks", "check.yml"), "utf8")).toContain("pnpm check");
+  });
+
   it("keeps JSON stdout parseable while routing progress to stderr", async () => {
     const cwd = await tempDir();
     await writeProject(cwd);
@@ -51,6 +79,28 @@ describe("CLI integration", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ selectedRoots: ["b"], includedTasks: ["a", "b"], order: ["a", "b"] });
     expect(await fs.pathExists(path.join(cwd, ".ariadne", "runs"))).toBe(false);
     expect(await fs.pathExists(path.join(cwd, ".ariadne", "batches"))).toBe(false);
+  });
+
+  it("explains plan fields once without changing quiet or JSON output", async () => {
+    const cwd = await tempDir();
+    await writeProject(cwd);
+    const marker = path.join(cwd, ".ariadne", "onboarding", "plan-guide-v1");
+
+    const json = cli(cwd, ["plan", "--all", "--json"]);
+    expect(JSON.parse(json.stdout).includedTasks).toEqual(["example"]);
+    expect(await fs.pathExists(marker)).toBe(false);
+
+    const quiet = cli(cwd, ["plan", "--all", "--quiet"]);
+    expect(quiet.stdout).not.toContain("How to read this plan");
+    expect(await fs.pathExists(marker)).toBe(false);
+
+    const first = cli(cwd, ["plan", "--all"]);
+    expect(first.stdout).toContain("How to read this plan (shown once)");
+    expect(first.stdout).toContain("This is only a preview. No tasks have run yet.");
+    expect(await fs.pathExists(marker)).toBe(true);
+
+    const second = cli(cwd, ["plan", "--all"]);
+    expect(second.stdout).not.toContain("How to read this plan");
   });
 
   it("keeps legacy plan JSON pure while routing compatibility warnings to stderr", async () => {

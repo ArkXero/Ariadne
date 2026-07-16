@@ -4,6 +4,8 @@
 
 ### Added
 
+- Interactive `ariadne init` onboarding with repository-aware Default setup, full Custom setup, detected package scripts/agents/worktree capability, and pre-write YAML/file-change review.
+- Safe existing-config validation and replacement with mandatory diffs, disposable proposal validation, ignored timestamped backups, atomic writes, and rollback.
 - Configuration v4 with shared/worktree isolation, task workspace modes, retention, and bounded workspace preparation.
 - Managed detached worktrees, fresh retry workspaces, deterministic dependency-result layering, and primary-checkout mutation guards.
 - Run record v4, batch record v2, workspace/change/promotion v1 records, durable local result refs, safe patches, and separate immutable promotion events.
@@ -26,6 +28,7 @@
 
 ### Changed
 
+- Plain non-TTY `ariadne init` remains portable and idempotent; `init --yes` opts into detected defaults, while `init --custom` requires an interactive terminal.
 - `ariadne init` and maintained examples emit v4. V3 `parallelSafe` tasks adapt to `workspaceMode` with warnings.
 - Shared mode remains compatible; mutable tasks are exclusive and read-only mutation fails `workspace.read-only`. Worktree mode permits concurrent mutable tasks in distinct checkouts.
 - Worktree retries start fresh from source plus successful dependency results; shared retries retain iterative working-tree behavior.

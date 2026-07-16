@@ -24,6 +24,25 @@ export function formatWorkflowPlan(plan: WorkflowPlan): string {
   return lines.join("\n");
 }
 
+export function formatWorkflowPlanGuide(): string {
+  return [
+    "How to read this plan (shown once)",
+    "  Plan             Identifier for this exact workflow.",
+    "  Selected roots   Tasks you asked Ariadne to plan.",
+    "  Included tasks   Selected tasks plus their dependencies.",
+    "  Concurrency      Maximum tasks that may run together.",
+    "  Isolation        Separate Git folders or this project folder.",
+    "  Failure mode     Whether unrelated tasks continue after a failure.",
+    "  Levels/groups    Tasks that become ready at the same stage.",
+    "  Order            Planned task order.",
+    "  Dependencies     Tasks that must finish first.",
+    "  Workspace        mutable can edit files; read-only cannot.",
+    "  Retry            Total attempts (3 = 1 try + 2 retries).",
+    "",
+    "This is only a preview. No tasks have run yet."
+  ].join("\n");
+}
+
 export interface BatchReportView {
   kind: "batch";
   schemaVersion: number;

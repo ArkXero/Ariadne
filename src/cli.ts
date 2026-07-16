@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { doctorCommand } from "./commands/doctor.js";
-import { formatInitResult, initCommand } from "./commands/init.js";
+import { formatInitResult, initOnboardingCommand, initOutcomeJson } from "./commands/init.js";
 import { listCommand, type ListFormat } from "./commands/list.js";
 import { reportCommand } from "./commands/report.js";
 import { exitCodeForBatch, runCommand } from "./commands/run.js";
@@ -89,11 +89,30 @@ program
     if (options.verbose && options.quiet) throw new InvalidArgumentError("--verbose and --quiet cannot be used together.");
   });
 
-program.command("init").description("Create Ariadne config, example task, and record directories.").action(async (_, command: Command) => {
-  const options = command.optsWithGlobals<GlobalOptions>();
-  const result = await initCommand(process.cwd());
-  process.stdout.write(options.json ? `${JSON.stringify(result, null, 2)}\n` : `${formatInitResult(result)}\n`);
-});
+program.command("init").description("Configure Ariadne with repository-aware default or custom setup.")
+  .option("-y, --yes", "Accept detected defaults without prompting.")
+  .option("--custom", "Open Custom setup immediately (interactive terminals only).")
+  .action(async (local: { yes?: boolean; custom?: boolean }, command: Command) => {
+    const options = command.optsWithGlobals<GlobalOptions>();
+    if (local.yes && local.custom) throw new InvalidArgumentError("--yes and --custom cannot be combined.");
+    const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && !options.json && !local.yes);
+    if (local.custom && !interactive) throw new InvalidArgumentError("--custom requires an interactive terminal.");
+    const outcome = await initOnboardingCommand(process.cwd(), {
+      interactive,
+      repositoryAware: interactive || Boolean(local.yes),
+      custom: local.custom,
+      json: options.json,
+      quiet: options.quiet,
+      color: options.color
+    });
+    if (interactive) {
+      if ("doctor" in outcome && !outcome.doctor.passed) process.exitCode = 2;
+      return;
+    }
+    if (options.json) process.stdout.write(`${JSON.stringify(initOutcomeJson(outcome), null, 2)}\n`);
+    else if (!options.quiet && "result" in outcome) process.stdout.write(`${formatInitResult(outcome.result)}\n`);
+    if ("doctor" in outcome && !outcome.doctor.passed) process.exitCode = 2;
+  });
 
 program.command("doctor").description("Validate Ariadne configuration and commands before a run.")
   .option("-c, --config <path>", "Path to Ariadne config file.", "ariadne.yml")

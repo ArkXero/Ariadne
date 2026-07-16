@@ -62,10 +62,11 @@ git status --short
 ## Test organization
 
 - `tests/config-task.test.ts`: schemas, legacy adapters, task discovery, duplicate IDs, doctor checks, containment, and initialization.
+- `tests/init-onboarding.test.ts`: repository detection, generated proposals, Custom setup, cancellation, idempotency, replacement diffs, validation, atomic writes, and backups.
 - `tests/process-persistence.test.ts`: bounded byte capture, invalid UTF-8, spawn/exit/timeout/interruption, lifecycle checkpoints, attribution, and collisions.
 - `tests/policy-git.test.ts`: Git porcelain parsing, dirty baselines, modes/renames/symlinks, glob semantics, command evidence, policies, and scores.
 - `tests/report-history.test.ts`: v1 normalization, corruption tolerance, latest pointers, missing artifacts, hostile HTML, CSV, and Markdown escaping.
-- `tests/cli-integration.test.ts`: black-box command surface, JSON purity, no-color behavior, and stable exit codes.
+- `tests/cli-integration.test.ts`: black-box command surface, non-TTY/detected initialization, JSON purity, no-color behavior, and stable exit codes.
 - `tests/workflow-graph.test.ts`: graph validation, randomized determinism, selection closure, levels, plan identity, and immutability.
 - `tests/workflow-scheduler.test.ts`: exclusivity/concurrency, propagation, retries, parallel mutation, fail-fast, and interruption.
 - `tests/workflow-control.test.ts`: resume/rerun compatibility, attempt reuse/numbering, drift rejection, and selection modes.

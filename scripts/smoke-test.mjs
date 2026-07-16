@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { parse, stringify } from "yaml";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "dist", "cli.js");
@@ -87,8 +88,9 @@ try {
   await writeFile(path.join(forbidden, ".gitignore"), ".env\n", { flag: "a" });
   await writeFile(path.join(forbidden, "agent.mjs"), "import { writeFile } from 'node:fs/promises'; await writeFile('.env', 'SAMPLE=true\\n');\n");
   const configPath = path.join(forbidden, "ariadne.yml");
-  const config = await readFile(configPath, "utf8");
-  await writeFile(configPath, config.replace("file: node\n    args:\n      - \"-e\"\n      - \"process.stdin.pipe(process.stdout)\"", "file: node\n    args: [agent.mjs]"));
+  const config = parse(await readFile(configPath, "utf8"));
+  config.agent.command = { kind: "exec", file: "node", args: ["agent.mjs"] };
+  await writeFile(configPath, stringify(config));
   run(process.execPath, [cliPath, "run", "--quiet"], forbidden, 13);
   const forbiddenRecord = JSON.parse(await readFile(await latestManifest(forbidden), "utf8"));
   const evidence = forbiddenRecord.results?.[0]?.trace?.forbiddenFileChanges ?? [];

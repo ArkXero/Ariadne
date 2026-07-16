@@ -12,7 +12,7 @@
 ## Commands
 
 ```text
-ariadne init
+ariadne init [--yes|--custom]
 ariadne doctor [--config <path>]
 ariadne plan [task-id...] [--all] [--concurrency <n>] [--failure-mode continue|fail-fast] [--isolation shared|worktree] [--allow-dirty-base]
 ariadne run [task-id...] [--task <id>]... [--all] [--concurrency <n>] [--failure-mode continue|fail-fast] [--isolation shared|worktree] [--allow-dirty-base]
@@ -30,7 +30,11 @@ ariadne worktree remove <workspace-id>
 ariadne worktree clean [--dry-run]
 ```
 
-`plan` and `run` with no selectors include all tasks. Positional IDs and repeatable `run --task` values are merged and deduplicated case-insensitively. `--all` conflicts with explicit IDs. Selecting a task includes its transitive dependency closure. `plan` launches nothing and creates no records.
+Interactive `init` starts with Default versus Custom setup. Default is repository-aware; Custom covers the agent, imported script tasks, dependencies, isolation, concurrency, retries, file protections, limits, and timeout before a YAML/file-change review. Ctrl-C or Cancel at a prompt exits before writes.
+
+`--yes` accepts detected defaults without prompting. `--custom` requires an interactive terminal. Plain non-TTY `init` retains the portable example configuration for automation. If `ariadne.yml` already exists, non-TTY initialization changes nothing. Interactive replacement requires a diff review, validates the proposed v4 config in a disposable directory, writes an `ariadne.yml.backup-*` file, and atomically replaces the config; existing task files are skipped rather than overwritten.
+
+`plan` and `run` with no selectors include all tasks. Positional IDs and repeatable `run --task` values are merged and deduplicated case-insensitively. `--all` conflicts with explicit IDs. Selecting a task includes its transitive dependency closure. The first human-readable `plan` in a project includes a field guide and records that it was shown under `.ariadne/onboarding/`; `--quiet` and `--json` never show or record the guide. `plan` launches nothing and creates no execution records.
 
 `resume` retains source isolation and requires the source semantic fingerprint and Git HEAD. Only concurrency and dirty-base acknowledgement can change. Successful child/result references are reused; missing refs and uncertain workspaces are requeued in fresh worktrees.
 
