@@ -4,6 +4,7 @@ import { loadBatchFile, resolveBatchFile } from "./batch-reader.js";
 import { AriadneError } from "./errors.js";
 import { prepareWorkflow, runWorkflow } from "./workflow-runner.js";
 import { resultRefExists } from "./workspace-manager.js";
+import type { WorkflowRuntimeEmitter } from "./workflow-runtime.js";
 import type { BatchRecord, BatchTaskRecord, FailureMode, IsolationStrategy } from "../types/index.js";
 
 async function sourceBatch(cwd: string, idOrPath: string): Promise<{ batch: BatchRecord; warnings: string[] }> {
@@ -28,6 +29,9 @@ export async function resumeWorkflow(options: {
   allowDirtyBase?: boolean;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
+  executionBatchId?: string;
+  startedAt?: Date;
+  runtime?: WorkflowRuntimeEmitter;
 }): Promise<BatchRecord & { outputPath: string }> {
   const source = await sourceBatch(options.cwd, options.batchId);
   if (["succeeded", "succeeded_with_warnings"].includes(source.batch.batchStatus)) {
@@ -99,7 +103,8 @@ export async function resumeWorkflow(options: {
     failureMode: source.batch.plan.failureMode, signal: options.signal, onProgress: options.onProgress,
     isolation: source.batch.plan.isolation, allowDirtyBase: options.allowDirtyBase ?? source.batch.plan.dirtyBaseAcknowledged,
     relation: { kind: "resume", sourceBatchId: source.batch.batchId }, seedTasks: seeds, initialWarnings: source.warnings,
-    resumeCompatibility: { configFingerprint: source.batch.configFingerprint, sourceHead: source.batch.sourceHead }
+    resumeCompatibility: { configFingerprint: source.batch.configFingerprint, sourceHead: source.batch.sourceHead },
+    batchId: options.executionBatchId, startedAt: options.startedAt, runtime: options.runtime, prepared
   });
 }
 
@@ -115,6 +120,9 @@ export async function rerunWorkflow(options: {
   allowDirtyBase?: boolean;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
+  executionBatchId?: string;
+  startedAt?: Date;
+  runtime?: WorkflowRuntimeEmitter;
 }): Promise<BatchRecord & { outputPath: string }> {
   const source = await sourceBatch(options.cwd, options.batchId);
   if (!source.batch.plan) throw new AriadneError({ category: "persistence", code: "BATCH_PLAN_MISSING", stage: "validated", message: `Batch ${source.batch.batchId} has no rerunnable workflow plan.`, correction: "Run a new workflow from current configuration." });
@@ -129,6 +137,7 @@ export async function rerunWorkflow(options: {
   return runWorkflow({
     cwd: options.cwd, configPath: options.configPath ?? source.batch.configPath, taskIds: selected,
     concurrency: options.concurrency, failureMode: options.failureMode, isolation: options.isolation, allowDirtyBase: options.allowDirtyBase, signal: options.signal, onProgress: options.onProgress,
-    relation: { kind: "rerun", sourceBatchId: source.batch.batchId }, initialWarnings: source.warnings
+    relation: { kind: "rerun", sourceBatchId: source.batch.batchId }, initialWarnings: source.warnings,
+    batchId: options.executionBatchId, startedAt: options.startedAt, runtime: options.runtime
   });
 }

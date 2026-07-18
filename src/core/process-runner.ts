@@ -31,7 +31,13 @@ class RedactingTransform extends Transform {
 
   override _transform(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
     const combined = Buffer.concat([this.carry, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-    const emitLength = Math.max(0, combined.length - REDACTION_CARRY_BYTES);
+    const text = combined.toString("latin1");
+    const privateKeyStart = text.search(/-----BEGIN [^-\r\n]*PRIVATE KEY-----/);
+    const privateKeyEnd = privateKeyStart < 0 ? -1 : text.slice(privateKeyStart).search(/-----END [^-\r\n]*PRIVATE KEY-----/);
+    const newline = Math.max(combined.lastIndexOf(0x0a), combined.lastIndexOf(0x0d));
+    const emitLength = privateKeyStart >= 0 && privateKeyEnd < 0
+      ? privateKeyStart
+      : newline >= 0 ? newline + 1 : Math.max(0, combined.length - REDACTION_CARRY_BYTES);
     if (emitLength > 0) this.push(this.redact(combined.subarray(0, emitLength)));
     this.carry = combined.subarray(emitLength);
     callback();
@@ -177,6 +183,7 @@ export interface RunProcessOptions {
   env?: Record<string, string>;
   sensitiveValues?: string[];
   signal?: AbortSignal;
+  onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
 }
 
 export async function runProcess(options: RunProcessOptions): Promise<ProcessResult> {
@@ -186,6 +193,8 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
   const stderrFile = createWriteStream(options.stderrPath, { flags: "w", mode: 0o600 });
   const stdoutPreview = new PreviewCollector();
   const stderrPreview = new PreviewCollector();
+  const stdoutDecoder = new TextDecoder("utf-8", { fatal: false });
+  const stderrDecoder = new TextDecoder("utf-8", { fatal: false });
   const inheritedSensitive = Object.entries(process.env)
     .filter(([key, value]) => value && value.length >= 4 && /(?:TOKEN|SECRET|PASSWORD|PASS|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTH)/i.test(key))
     .map(([, value]) => value!);
@@ -210,6 +219,10 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
   let exitCode: number | null = null;
   let exitSignal: string | null = null;
   let spawnError: string | undefined;
+  const emitOutput = (stream: "stdout" | "stderr", chunk: string): void => {
+    if (!chunk) return;
+    try { options.onOutput?.(stream, chunk); } catch { /* Runtime observers cannot fail process execution. */ }
+  };
 
   const requestTermination = (reason: "timeout" | "interrupt"): void => {
     if (!subprocess || terminationPromise) return;
@@ -234,8 +247,18 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
       stripFinalNewline: false
     });
 
-    stdoutRedactor.on("data", (chunk: Buffer | string) => stdoutPreview.add(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-    stderrRedactor.on("data", (chunk: Buffer | string) => stderrPreview.add(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    stdoutRedactor.on("data", (chunk: Buffer | string) => {
+      const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      stdoutPreview.add(value);
+      const decoded = stdoutDecoder.decode(value, { stream: true });
+      emitOutput("stdout", decoded);
+    });
+    stderrRedactor.on("data", (chunk: Buffer | string) => {
+      const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      stderrPreview.add(value);
+      const decoded = stderrDecoder.decode(value, { stream: true });
+      emitOutput("stderr", decoded);
+    });
     subprocess.stdout?.pipe(stdoutRedactor);
     subprocess.stderr?.pipe(stderrRedactor);
     if (options.input !== undefined) subprocess.stdin?.end(options.input);
@@ -267,6 +290,10 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
       finished(stdoutFile).catch(() => undefined),
       finished(stderrFile).catch(() => undefined)
     ]);
+    const finalStdout = stdoutDecoder.decode();
+    const finalStderr = stderrDecoder.decode();
+    emitOutput("stdout", finalStdout);
+    emitOutput("stderr", finalStderr);
   }
   return {
     kind: options.spec.kind,

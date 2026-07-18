@@ -6,6 +6,8 @@ The graph canonicalizes IDs case-insensitively while preserving declared spellin
 
 The plan ID is content-derived from the semantic configuration, selected roots, graph, effective verification/retry settings, concurrency, and failure mode. `createdAt` is informational. The semantic fingerprint excludes concurrency so resume can change only that execution bound.
 
+`inspectWorkflowOptions` and `createWorkflowPlanPreview` expose the same normalized catalog and deterministic plan to the CLI and TUI without launching processes. Previews include repository state, warnings, and launch blockers. Option editing is intentionally limited to concurrency, failure mode, isolation, and dirty-base acknowledgement; retry limits remain task semantics.
+
 ## Scheduling
 
 Tasks default to exclusive. An exclusive task starts only when nothing else is active. Parallel-safe tasks can overlap only with other parallel-safe tasks and only up to the configured limit. Ready queues and completion application follow plan order.
@@ -23,3 +25,11 @@ Every attempt has its own run ID, manifest, artifacts, trace, score, and report.
 ## Resume versus rerun
 
 Resume is crash/retry continuation: same semantics and HEAD, reusable successful children, and no history mutation. Rerun is a new evaluation: current configuration, selected current closure, and every included dependency executes again. Use rerun after workflow or repository changes.
+
+The TUI preview modes are failed tasks, failed branch, and all original roots. Failed branch chooses maximal blocked descendants so the review shows the broadest affected branches, then falls back to failed tasks when no blocked descendant exists. Every mode replans against current configuration and requires explicit confirmation before creating related history.
+
+## Runtime observation and control
+
+`startWorkflowExecution` returns a process-local handle with batch ID, completion, subscription, latest provisional state, and idempotent cancellation. The registry permits one active workflow per TUI process. Runtime events are asynchronous and non-durable; final statuses, policies, scores, task history, and artifact paths always come from persisted records.
+
+Restarted processes do not reattach to operating-system children. A persisted running/incomplete batch without a current registry handle is inspection-only and explicitly labeled unattached.

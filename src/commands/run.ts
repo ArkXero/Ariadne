@@ -1,4 +1,4 @@
-import { runWorkflow } from "../core/workflow-runner.js";
+import { startWorkflowExecution } from "../core/workflow-application.js";
 import { buildBatchReportModel, formatBatchCompletion } from "../core/workflow-report.js";
 import { withWorkflowSignals } from "./workflow-signals.js";
 import type { BatchRecord, FailureCategory, FailureMode, IsolationStrategy, RunRecord, TaskOutcome } from "../types/index.js";
@@ -55,7 +55,8 @@ export async function runCommand(options: {
   json?: boolean;
   quiet?: boolean;
 }): Promise<{ batch: BatchRecord; signal?: NodeJS.Signals }> {
-  const execution = await withWorkflowSignals((signal) => runWorkflow({
+  const execution = await withWorkflowSignals(async (signal) => (await startWorkflowExecution({
+      kind: "run",
       cwd: options.cwd,
       configPath: options.configPath,
       taskIds: options.taskIds,
@@ -65,7 +66,7 @@ export async function runCommand(options: {
       allowDirtyBase: options.allowDirtyBase,
       signal,
       onProgress: options.quiet ? undefined : (message) => process.stderr.write(`${message}\n`)
-    }));
+    })).completion);
   process.stdout.write(options.json
     ? `${JSON.stringify(buildBatchReportModel(execution.value, [], execution.value.artifacts.manifest), null, 2)}\n`
     : `${formatBatchCompletion(execution.value)}\n`);

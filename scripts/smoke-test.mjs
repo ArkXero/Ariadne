@@ -68,6 +68,9 @@ try {
   run(process.execPath, [cliPath, "--help"], passing);
   run(process.execPath, [cliPath, "-h"], passing);
   run(process.execPath, [cliPath, "--", "--help"], passing);
+  run(process.execPath, [cliPath, "tui", "--help"], passing);
+  const tuiRefusal = run(process.execPath, [cliPath, "tui"], passing, 2);
+  if (tuiRefusal.stdout !== "" || tuiRefusal.stderr.includes("\u001B")) throw new Error("Non-TTY TUI refusal emitted stdout or ANSI.");
   run(process.execPath, [cliPath, "init"], passing);
   run(process.execPath, [cliPath, "doctor", "--quiet"], passing);
   run(process.execPath, [cliPath, "plan", "--all", "--json"], passing);

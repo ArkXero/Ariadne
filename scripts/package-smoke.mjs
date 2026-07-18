@@ -11,8 +11,8 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function run(command, args, cwd, expected = 0) {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8", env: { ...process.env, NO_COLOR: "1" } });
+function run(command, args, cwd, expected = 0, environment = {}) {
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", env: { ...process.env, NO_COLOR: "1", ...environment } });
   if (result.status !== expected) {
     throw new Error([`Command failed: ${command} ${args.join(" ")}`, `cwd: ${cwd}`, `expected ${expected}, got ${result.status}`, "stdout:", result.stdout, "stderr:", result.stderr].join("\n"));
   }
@@ -161,7 +161,7 @@ try {
 
   const help = run(binary, ["--help"], installRoot);
   assert(help.stdout.includes("Usage: ariadne"), "Installed CLI help output was invalid.");
-  for (const command of ["init", "doctor", "plan", "run", "resume", "rerun", "list", "report", "changes", "diff", "status", "apply", "discard", "worktree"]) {
+  for (const command of ["init", "doctor", "plan", "run", "resume", "rerun", "list", "report", "tui", "changes", "diff", "status", "apply", "discard", "worktree"]) {
     assert(run(binary, [command, "--help"], installRoot).stdout.includes(`Usage: ariadne ${command}`), `Installed ${command} help was invalid.`);
   }
   for (const command of ["list", "remove", "clean"]) {
@@ -169,6 +169,10 @@ try {
   }
   const version = run(binary, ["--version"], installRoot).stdout.trim();
   assert(version === installedPackage.version, `Installed CLI version ${version} does not match package ${installedPackage.version}`);
+  const tuiRefusal = run(binary, ["tui"], installRoot, 2);
+  assert(tuiRefusal.stdout === "" && !tuiRefusal.stderr.includes("\u001B") && tuiRefusal.stderr.includes("interactive stdin/stdout"), "Installed TUI non-TTY refusal was not clean.");
+  const installedPty = run(process.execPath, [path.join(repoRoot, "scripts", "tui-pty-smoke.mjs")], installRoot, 0, { ARIADNE_TUI_CLI: installedCli });
+  assert(installedPty.stdout.includes("TUI PTY smoke passed") || installedPty.stdout.includes("TUI PTY smoke skipped"), "Installed TUI PTY smoke did not report a supported or explicit fallback result.");
   for (const args of [
     ["plan", "--all", "--concurrency", "33"],
     ["plan", "--all", "--failure-mode", "stop"],

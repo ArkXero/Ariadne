@@ -10,6 +10,7 @@ import { resumeCommand } from "./commands/resume.js";
 import { rerunCommand } from "./commands/rerun.js";
 import { applyCommand, changesCommand, diffCommand, discardCommand, statusCommand } from "./commands/changes.js";
 import { worktreeCleanCommand, worktreeListCommand, worktreeRemoveCommand } from "./commands/worktree.js";
+import { tuiCommand } from "./commands/tui.js";
 import { AriadneError, formatAriadneError } from "./core/errors.js";
 import { getAriadneVersion } from "./core/version.js";
 import type { FailureMode, IsolationStrategy } from "./types/index.js";
@@ -83,7 +84,7 @@ program
   .option("--verbose", "Include stack traces and deeper diagnostics.")
   .option("--quiet", "Suppress progress and warning output.")
   .option("--json", "Write machine-readable JSON to stdout.")
-  .option("--no-color", "Disable color output (output is ANSI-free in this release).")
+  .option("--no-color", "Disable color and styled text output.")
   .hook("preAction", (command) => {
     const options = command.optsWithGlobals<GlobalOptions>();
     if (options.verbose && options.quiet) throw new InvalidArgumentError("--verbose and --quiet cannot be used together.");
@@ -206,6 +207,14 @@ program.command("report").description("Print a task or workflow summary and gene
     const options = command.optsWithGlobals<GlobalOptions>();
     if (local.run && local.batch) throw new InvalidArgumentError("Choose only one of --run or --batch.");
     await reportCommand({ cwd: process.cwd(), runPath: local.run, batchPath: local.batch, outputPath: local.output, json: options.json, quiet: options.quiet });
+  });
+
+program.command("tui").description("Open the keyboard-first Ariadne workflow TUI.")
+  .action(async (_local: unknown, command: Command) => {
+    const options = command.optsWithGlobals<GlobalOptions>();
+    if (options.json) throw new InvalidArgumentError("--json cannot be used with the interactive tui command.");
+    if (options.quiet) throw new InvalidArgumentError("--quiet cannot be used with the interactive tui command.");
+    await tuiCommand({ cwd: process.cwd(), verbose: options.verbose, color: options.color });
   });
 
 program.command("changes <runIdOrPath>").description("Show the canonical safe-change view for an isolated task attempt.")

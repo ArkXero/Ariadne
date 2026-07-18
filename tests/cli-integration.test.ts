@@ -24,13 +24,25 @@ describe("CLI integration", () => {
     const cwd = await tempDir();
     const help = cli(cwd, ["--help"]);
     expect(help.status).toBe(0);
-    expect(help.stdout).toMatch(/init|doctor|plan|run|resume|rerun|list|report|changes|diff|status|apply|discard|worktree/);
+    expect(help.stdout).toMatch(/init|doctor|plan|run|resume|rerun|list|report|tui|changes|diff|status|apply|discard|worktree/);
     expect(cli(cwd, ["--version"]).stdout.trim()).toBe("0.1.0");
-    for (const command of ["init", "doctor", "plan", "run", "resume", "rerun", "list", "report", "changes", "diff", "status", "apply", "discard", "worktree"]) {
+    for (const command of ["init", "doctor", "plan", "run", "resume", "rerun", "list", "report", "tui", "changes", "diff", "status", "apply", "discard", "worktree"]) {
       expect(cli(cwd, [command, "--help"]).stdout).toContain("Global Options:");
       expect(cli(cwd, [command, "--help"]).stdout).toContain("--json");
     }
   }, 20_000);
+
+  it("refuses non-interactive TUI use and rejects machine-output flags cleanly", async () => {
+    const cwd = await tempDir();
+    for (const args of [["tui"], ["tui", "--json"], ["tui", "--quiet"]]) {
+      const result = cli(cwd, args);
+      expect(result.status).toBe(2);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain("\u001B");
+    }
+    expect(cli(cwd, ["tui"]).stderr).toContain("requires interactive stdin/stdout");
+    expect(cli(cwd, ["tui", "--json"]).stderr).toContain("--json cannot be used");
+  });
 
   it("keeps non-interactive init portable and requires a TTY for custom setup", async () => {
     const cwd = await tempDir();

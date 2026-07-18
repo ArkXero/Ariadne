@@ -17,11 +17,18 @@ describe("canonical reports", () => {
     const model = buildReportModel(run);
     model.tasks[0].name = '<script>alert("x")</script><img src=x onerror=alert(1)>';
     model.tasks[0].failures = ["</textarea><script>bad()</script>"];
+    model.warnings = ["Review this warning"];
     const html = buildHtmlReport(model);
     expect(html).toContain("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;");
     expect(html).not.toContain("<script>alert");
     expect(html).not.toContain("onerror=alert(1)>");
     expect(html).toContain("@media print");
+    expect(html).toContain("#F6453C");
+    expect(html).toContain("#F59E0B");
+    expect(html).toContain("#FCF7F8");
+    expect(html).toContain("#CED3DC");
+    expect(html).toContain('class="card warning"');
+    expect(html).not.toContain("#f6f7f4");
     expect(html).toContain("Run lifecycle");
     expect(html).toContain("Task-attributed changes");
     expect(html).toContain("score breakdown");

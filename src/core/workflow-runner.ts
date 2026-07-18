@@ -14,6 +14,7 @@ import { WorkflowGraph } from "./workflow-graph.js";
 import { buildWorkflowPlan } from "./workflow-planner.js";
 import { buildBatchHtmlReport, buildBatchReportModel } from "./workflow-report.js";
 import { repositoryIdentity } from "./workspace-manager.js";
+import type { WorkflowRuntimeEmitter } from "./workflow-runtime.js";
 import type {
   AriadneConfig, AriadneTask, BatchAttemptReference, BatchPaths, BatchRecord, BatchStatus, BatchTaskRecord,
   BatchTaskState, FailureMode, FailureRecord, RunRecord, TaskOutcome, WorkflowPlan
@@ -49,6 +50,10 @@ export interface WorkflowOptions {
   seedTasks?: BatchTaskRecord[];
   initialWarnings?: string[];
   resumeCompatibility?: { configFingerprint: string; sourceHead?: string };
+  batchId?: string;
+  startedAt?: Date;
+  prepared?: PreparedWorkflow;
+  runtime?: WorkflowRuntimeEmitter;
 }
 
 function relative(root: string, value: string): string {
@@ -289,6 +294,8 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
   let stopLaunching = false;
   let cancellationRecorded = false;
   let primaryGuardViolated = false;
+  const emittedTerminalStates = new Map<string, BatchTaskState>();
+  const emittedWarnings = new Set<string>();
   const primarySignature = JSON.stringify({ head: prepared.sourceHead, entries: prepared.excludedSourceChanges });
 
   const guardPrimary = async (): Promise<boolean> => {
@@ -308,7 +315,32 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
     return false;
   };
 
-  const persistState = async (detail = "Scheduler state checkpoint.", taskId?: string) => checkpoint(record, paths, "running", detail, taskId);
+  const persistState = async (detail = "Scheduler state checkpoint.", taskId?: string) => {
+    await checkpoint(record, paths, "running", detail, taskId);
+    for (const warning of record.warnings) {
+      const key = `batch\0${warning}`;
+      if (emittedWarnings.has(key)) continue;
+      emittedWarnings.add(key);
+      options.runtime?.emit({ type: "runtime.warning", category: "batch", message: warning });
+    }
+    for (const task of record.tasks) {
+      for (const warning of task.warnings) {
+        const key = `${task.id}\0${warning}`;
+        if (emittedWarnings.has(key)) continue;
+        emittedWarnings.add(key);
+        options.runtime?.emit({ type: "runtime.warning", category: "task", taskId: task.id, message: warning });
+      }
+      if (!terminal(task.state) || emittedTerminalStates.get(task.id) === task.state) continue;
+      const final = task.finalAttempt === undefined ? task.attempts.at(-1) : task.attempts.find((attempt) => attempt.attempt === task.finalAttempt);
+      options.runtime?.emit({
+        type: "task.completed", taskId: task.id, attempt: final?.attempt ?? 0,
+        ...(final?.runId ? { runId: final.runId } : {}), state: task.state,
+        ...(task.finalOutcome ? { outcome: task.finalOutcome } : {})
+      });
+      emittedTerminalStates.set(task.id, task.state);
+    }
+    options.runtime?.emit({ type: "batch.state", status: record.batchStatus, summary: { ...record.summary } });
+  };
   const dependencies = (task: BatchTaskRecord) => task.dependencies.map((id) => byId.get(id)!);
 
   const propagate = (): boolean => {
@@ -324,10 +356,12 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
           chain: [failed.id, ...(failed.blockReason?.chain ?? [])], message: `Dependency ${failed.id} ended as ${failed.state}.`
         };
         record.lifecycle.push({ stage: "running", at: new Date().toISOString(), taskId: task.id, detail: task.blockReason.message });
+        options.runtime?.emit({ type: "task.blocked", taskId: task.id, blockedBy: task.blockReason.chain, reason: task.blockReason.message });
         changed = true;
       } else if (dependencies(task).every((dependency) => dependency.state === "succeeded") && task.state === "pending") {
         task.state = "ready";
         record.lifecycle.push({ stage: "running", at: new Date().toISOString(), taskId: task.id, detail: "Task became ready." });
+        options.runtime?.emit({ type: "task.ready", taskId: task.id });
         changed = true;
       }
     }
@@ -343,6 +377,7 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
     const attempt = (task.attempts.at(-1)?.attempt ?? 0) + 1;
     record.lifecycle.push({ stage: "running", at: new Date().toISOString(), taskId: task.id, detail: `Attempt ${attempt} started.` });
     options.onProgress?.(`Running task: ${task.id} (attempt ${attempt})`);
+    options.runtime?.emit({ type: "task.started", taskId: task.id, attempt });
     const promise = executeTaskAttempt({
       projectRoot: prepared.projectRoot, config: prepared.config, configPath: prepared.configPath,
       task: prepared.graph.require(task.id), batchId: record.batchId, planId: prepared.plan.planId, attempt,
@@ -356,7 +391,8 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
         const final = dependency.finalAttempt === undefined ? undefined : dependency.attempts.find((item) => item.attempt === dependency.finalAttempt);
         return final?.resultRevision ? { taskId: dependency.id, runId: final.runId, resultRevision: final.resultRevision } : undefined;
       }).filter((item): item is { taskId: string; runId: string; resultRevision: string } => item !== undefined),
-      signal: options.signal
+      signal: options.signal,
+      runtime: options.runtime
     }).then((run): AttemptCompletion => ({ id: task.id, run }), (error): AttemptCompletion => ({ id: task.id, error }))
       .then((completion) => { settled.push(completion); return completion; });
     active.set(task.id, promise);
@@ -376,10 +412,15 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
       stopLaunching = true;
       if (!cancellationRecorded) {
         cancellationRecorded = true;
+        options.runtime?.emit({ type: "batch.cancellation_requested" });
+        options.runtime?.emit({ type: "batch.cancellation_progress", stage: "launches-stopped" });
         await checkpoint(record, paths, "cancelling", "Workflow interruption requested; stopping launches and retry waits.");
       }
     }
-    if (stopLaunching) for (const controller of delayControllers.values()) controller.abort();
+    if (stopLaunching) {
+      for (const controller of delayControllers.values()) controller.abort();
+      if (options.signal?.aborted && active.size > 0) options.runtime?.emit({ type: "batch.cancellation_progress", stage: "processes-terminating", detail: `${active.size} active task process${active.size === 1 ? "" : "es"}` });
+    }
     if (propagate()) await persistState();
 
     if (stopLaunching && active.size === 0 && delays.size === 0) {
@@ -388,6 +429,7 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
         else if (!terminal(task.state)) { task.state = "skipped"; task.skipReason = options.signal?.aborted ? "Workflow was interrupted before launch." : "Failure mode stopped new task launches."; }
       }
       await persistState(options.signal?.aborted ? "Interrupted pending scheduler work." : "Stopped pending scheduler work after failure.");
+      if (options.signal?.aborted) options.runtime?.emit({ type: "batch.cancellation_progress", stage: "tasks-finalizing" });
       break;
     }
 
@@ -421,6 +463,8 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
     if (!completion) continue;
     if (options.signal?.aborted && !cancellationRecorded) {
       cancellationRecorded = true;
+      options.runtime?.emit({ type: "batch.cancellation_requested" });
+      options.runtime?.emit({ type: "batch.cancellation_progress", stage: "launches-stopped" });
       await checkpoint(record, paths, "cancelling", "Workflow interruption requested; stopping launches and retry waits.");
     }
     if ("delay" in completion) {
@@ -432,6 +476,7 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
         if (options.signal?.aborted) task.finalOutcome = "interrupted";
         if (!options.signal?.aborted) task.skipReason = "Failure mode stopped the pending retry.";
       } else task.state = "pending";
+      if (completion.delay === "aborted" && options.signal?.aborted) options.runtime?.emit({ type: "batch.cancellation_progress", stage: "retry-delays-cancelled", detail: task.id });
       await persistState(completion.delay === "aborted" ? "Retry wait was cancelled." : "Retry delay completed.", task.id);
       continue;
     }
@@ -512,6 +557,10 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
       task.state = "retry_wait";
       task.finalOutcome = undefined;
       task.warnings.push(`Attempt ${attemptRef.attempt} failed and will retry from the current working tree.`);
+      options.runtime?.emit({
+        type: "task.retry_scheduled", taskId: task.id, currentAttempt: attemptRef.attempt,
+        nextAttempt: attemptRef.attempt + 1, retryAt: new Date(Date.now() + delayMs).toISOString(), reason: retry.reason ?? "Retry eligible failure."
+      });
       const delayController = new AbortController();
       const onAbort = () => delayController.abort();
       options.signal?.addEventListener("abort", onAbort, { once: true });
@@ -535,8 +584,10 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
     if (task.state === "failed" && prepared.plan.failureMode === "fail-fast") stopLaunching = true;
     if (task.state === "incomplete") stopLaunching = true;
     if (task.state === "interrupted") stopLaunching = true;
+    if (options.signal?.aborted && task.state === "interrupted") options.runtime?.emit({ type: "batch.cancellation_progress", stage: "tasks-finalizing", detail: task.id });
     await persistState(task.state === "retry_wait" ? `Retry scheduled after ${attemptRef.retryDelayMs ?? 0}ms.` : `Task transitioned to ${task.state}.`, task.id);
     }
+    await persistState("Scheduler reached a terminal state.");
   } catch (error) {
     for (const controller of delayControllers.values()) controller.abort();
     await Promise.allSettled([...active.values(), ...delays.values()]);
@@ -547,8 +598,8 @@ async function executeSchedule(prepared: PreparedWorkflow, record: BatchRecord, 
 export async function runWorkflow(options: WorkflowOptions): Promise<BatchRecord & { outputPath: string }> {
   const root = await fs.realpath(options.cwd).catch(() => path.resolve(options.cwd));
   const now = options.now ?? (() => new Date());
-  const startedAt = now();
-  const batchId = createBatchId(startedAt, options.randomId?.());
+  const startedAt = options.startedAt ?? now();
+  const batchId = options.batchId ?? createBatchId(startedAt, options.randomId?.());
   const paths = await createBatchPaths(root, batchId);
   const record = initialBatchRecord({ batchId, startedAt, ariadneVersion: await getAriadneVersion(), paths });
   if (options.relation) record.relation = options.relation;
@@ -556,7 +607,7 @@ export async function runWorkflow(options: WorkflowOptions): Promise<BatchRecord
   await persistBatch(record, paths);
   try {
     await checkpoint(record, paths, "planning", "Loading and validating workflow configuration.");
-    const prepared = await prepareWorkflow({ ...options, createdAt: startedAt });
+    const prepared = options.prepared ?? await prepareWorkflow({ ...options, createdAt: startedAt });
     if (options.resumeCompatibility && prepared.plan.configFingerprint !== options.resumeCompatibility.configFingerprint) {
       throw new AriadneError({
         category: "configuration", code: "RESUME_CONFIG_CHANGED", stage: "validated",
@@ -587,11 +638,18 @@ export async function runWorkflow(options: WorkflowOptions): Promise<BatchRecord
     record.tasks = makeBatchTasks(prepared, options.seedTasks);
     refreshRunningSummary(record);
     await persistBatch(record, paths);
+    options.runtime?.emit({ type: "batch.started", startedAt: record.startedAt, planId: prepared.plan.planId });
+    options.runtime?.emit({ type: "batch.state", status: record.batchStatus, summary: { ...record.summary } });
     await executeSchedule(prepared, record, paths, options);
   } catch (error) {
     const ariadneError = asAriadneError(error, { category: "internal", code: "WORKFLOW_INTERNAL_ERROR", stage: "loading" });
     record.failures.push(failure(ariadneError, root));
-    for (const task of record.tasks) if (!terminal(task.state)) task.state = options.signal?.aborted ? "interrupted" : "incomplete";
+    for (const task of record.tasks) {
+      if (!terminal(task.state)) task.state = options.signal?.aborted ? "interrupted" : "incomplete";
+      if (!terminal(task.state)) continue;
+      const final = task.finalAttempt === undefined ? task.attempts.at(-1) : task.attempts.find((attempt) => attempt.attempt === task.finalAttempt);
+      options.runtime?.emit({ type: "task.completed", taskId: task.id, attempt: final?.attempt ?? 0, ...(final?.runId ? { runId: final.runId } : {}), state: task.state, ...(task.finalOutcome ? { outcome: task.finalOutcome } : {}) });
+    }
   }
 
   const completed = new Date();
@@ -599,6 +657,7 @@ export async function runWorkflow(options: WorkflowOptions): Promise<BatchRecord
   record.durationMs = completed.getTime() - startedAt.getTime();
   summarizeBatch(record);
   record.lifecycle.push({ stage: "persisting", at: new Date().toISOString() }, { stage: "completed", at: new Date().toISOString() });
+  if (options.signal?.aborted) options.runtime?.emit({ type: "batch.cancellation_progress", stage: "batch-finalizing" });
   const reportPath = path.join(paths.batchDirectory, "report.html");
   try {
     await persistBatch(record, paths);
@@ -618,5 +677,6 @@ export async function runWorkflow(options: WorkflowOptions): Promise<BatchRecord
     await atomicWriteFile(reportPath, buildBatchHtmlReport(buildBatchReportModel(record, [], paths.manifestPath))).catch(() => undefined);
     if (recoveredManifest) await updateBatchPointers(record, paths).catch(() => undefined);
   }
+  options.runtime?.emit({ type: "batch.completed", status: record.batchStatus, outcome: record.outcome, manifest: record.artifacts.manifest });
   return { ...record, outputPath: paths.manifestPath };
 }

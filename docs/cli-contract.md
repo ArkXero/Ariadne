@@ -5,7 +5,7 @@
 - `--verbose`: include stack traces and deeper diagnostics.
 - `--quiet`: suppress progress and warning output.
 - `--json`: emit a machine-readable JSON payload.
-- `--no-color`: disable color; output is ANSI-free in this release.
+- `--no-color`: disable color and styled text. The interactive TUI still uses terminal control sequences for raw-mode screen management.
 
 `--verbose` and `--quiet` conflict. Machine modes write only payloads to stdout; progress, warnings, and artifact locations go to stderr.
 
@@ -20,6 +20,7 @@ ariadne resume <batch-id-or-path> [--concurrency <n>] [--allow-dirty-base]
 ariadne rerun <batch-id-or-path> (--failed|--blocked|--all|--task <id>...) [--isolation shared|worktree] [--allow-dirty-base]
 ariadne list [--tasks|--batches] [--unapplied|--applied|--discarded] [--format compact|wide|json|csv|markdown] [--output <path>]
 ariadne report [--run <id-or-path>|--batch <id-or-path>] [--output <path>]
+ariadne tui
 ariadne changes <run-id-or-path>
 ariadne diff <run-id-or-path> [--output <path>]
 ariadne status <run-id-or-path>
@@ -41,6 +42,12 @@ Interactive `init` starts with Default versus Custom setup. Default is repositor
 `rerun` requires exactly one selection mode. It uses current validated configuration, reruns the selected roots and their current dependency closure, and never reuses successful child attempts.
 
 `list` defaults to task-attempt history. `--wide`, `--csv`, `--md`, and global `--json` remain format aliases. Conflicting kinds/formats fail with exit 2. `report` follows `.ariadne/latest.json` by default. Input and output paths must remain inside the canonical project root after symlink resolution.
+
+`tui` requires interactive stdin/stdout and stdin raw-mode support. Non-TTY use exits 2 with empty stdout and plain stderr. `--json` and `--quiet` are rejected. `--verbose`, `--no-color`, `NO_COLOR`, limited-color terminals, terminal resizing, SIGINT, and SIGTERM are supported. Missing configuration and empty history open a safe dashboard.
+
+The TUI uses the same application service as `plan`, `run`, `resume`, and `rerun`. It can select roots, inspect dependency expansion, edit concurrency `1..32`, failure mode, isolation, and dirty-base acknowledgement, explicitly launch one attached workflow, stream provisional redacted process events, request idempotent cancellation, and create new related resume/rerun history after confirmation. Persisted records remain authoritative and source batches are immutable. A running/incomplete record without a current-process registry handle is inspection-only and labeled `no active runtime attached`; restart-time process reattachment is not claimed. Apply, discard, worktree cleanup, remote execution, and schema migration remain CLI-only.
+
+With no active workflow, `q` exits immediately. With an active workflow, `q` requires confirmation, restores the terminal, and leaves the shell occupied until the same Ariadne process finishes headless execution. Ctrl-C after detachment requests cancellation. SIGINT/SIGTERM request cancellation, wait up to `min(30s, 2 * termination_grace_ms + 5s)`, restore the terminal, and report signal exit code 130/143.
 
 `diff` prints only the bounded text-safe preview unless `--output` explicitly copies the complete safe binary patch. `apply` never stashes or merges automatically. Preflight conflicts do not touch the primary checkout; an unexpected primary cherry-pick conflict is aborted. Management commands write separate promotion records and do not replace execution latest pointers.
 

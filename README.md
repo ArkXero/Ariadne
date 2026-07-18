@@ -30,6 +30,7 @@ ariadne plan --all
 ariadne run --all
 ariadne list --batches
 ariadne report
+ariadne tui
 ```
 
 In an interactive terminal, `init` offers a repository-aware Default setup and a Custom setup. Default detects the project type, package manager, validation script, installed Codex/Claude Code executable, and Git worktree capability; it imports the strongest detected validation command as a task. Custom additionally configures task dependencies, isolation, concurrency, retries, sensitive-file protections, change limits, and timeouts, then provides YAML and file-diff review before writing.
@@ -96,6 +97,9 @@ verify:
     file: pnpm
     args: [build]
 metadata:
+  description: Rebuild and verify the distributable package.
+  group: release
+  tags: [package, verification]
   issue: 42
 prompt: Validate and package the project.
 ```
@@ -125,6 +129,7 @@ ariadne list --batches --format json
 ariadne list --batches --format csv --output exports/batches.csv
 ariadne report --run <run-id-or-path>
 ariadne report --batch <batch-id-or-path> --output reports/workflow.html
+ariadne tui
 ariadne changes <run-id>
 ariadne diff <run-id> --output exports/result.patch
 ariadne status <run-id>
@@ -134,6 +139,8 @@ ariadne worktree clean --dry-run
 ```
 
 `run` with no selectors remains equivalent to `--all`. `plan` is read-only: it creates no run or batch record and launches no processes. `list` defaults to child task attempts. `report` follows `.ariadne/latest.json` by default. Existing list format flags remain aliases. See [the CLI contract](./docs/cli-contract.md) for selection rules and exit codes.
+
+`tui` opens a keyboard-first workflow control surface over the same planner, scheduler, compatibility readers, and canonical report models as the CLI. Press `p` to select tasks, review the dependency-expanded plan, edit concurrency/failure/isolation/dirty-base options, explicitly confirm launch, and monitor per-process stdout/stderr. Attached in-process workflows can be cancelled, resumed, or rerun from history; persisted running/incomplete records from another or restarted process are labeled `no active runtime attached`. Redirected use exits 2 without ANSI output. `--verbose`, `--no-color`, `NO_COLOR`, ASCII fallback, responsive `100/60/40` layouts, contextual `?` help, and `r` reconciliation remain supported. Promotion, discard, cleanup, remote execution, and mouse-first behavior remain outside the TUI. See [Ariadne TUI](./docs/tui.md).
 
 ## Records and reports
 
@@ -192,6 +199,7 @@ pnpm test:package
 Documentation:
 
 - [Architecture](./docs/architecture.md)
+- [Design system](./docs/design-system.md)
 - [Workflow orchestration](./docs/workflows.md)
 - [Lifecycle](./docs/run-lifecycle.md)
 - [CLI contract](./docs/cli-contract.md)
@@ -199,7 +207,9 @@ Documentation:
 - [Agent adapters](./docs/agent-adapters.md)
 - [Task isolation](./docs/task-isolation.md)
 - [Testing](./TESTING.md)
+- [Ariadne TUI](./docs/tui.md)
 - [Release process](./docs/releasing.md)
 - [Supported environments](./docs/supported-environments.md)
 - [Known limitations](./docs/known-limitations.md)
+- [Troubleshooting](./docs/troubleshooting.md)
 - [Safe self-hosting fixtures](./examples/self-hosting/README.md)

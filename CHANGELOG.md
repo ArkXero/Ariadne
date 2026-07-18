@@ -4,6 +4,16 @@
 
 ### Added
 
+- Operational `ariadne tui` planning, task selection, option editing, explicit launch confirmation, live task/process/output monitoring, cancellation confirmation/progress, dashboard detach/reopen, and confirmed headless continuation.
+- Shared workflow inspection/preview/launch services for CLI and TUI, typed in-memory runtime events, bounded asynchronous subscriptions, redacted UTF-8 process streaming, one-active-workflow registry, persistence reconciliation, and idempotent cancellation handles.
+- Resume and failed/failed-branch/all-root rerun previews in workflow history, with current-configuration replanning and immutable source records.
+- Bounded 500-line/256 KiB live buffers, retry countdowns, blocked dependency chains, preparation/agent/verification process separation, subscriber overflow/sequence-gap warnings, and unattached-runtime labeling.
+- Operational TUI behavior tests plus a POSIX system-PTY smoke harness for planning, monitoring, detach/reopen, cancellation, resize signaling, and terminal teardown.
+- Shared semantic design tokens across interactive Init, the Ink TUI, and generated run/workflow HTML reports, including Green success, Cyan selection/running, Coral frames/failure, Orange warning, and Slate metadata in the TUI.
+- A fixed-height, row-one TUI shell with a compact header/footer, windowed lists, rounded zero-gutter frames, and Lazygit-inspired master/detail panes on wide terminals; compact and stacked terminals preserve drill-down navigation.
+- `ariadne tui`, initially introduced with dashboard, filtered history, workflow/task/attempt detail, warnings, contextual help, responsive Unicode/ASCII layouts, refresh, and safe terminal teardown.
+- Typed TUI application services, structured warning codes, stable legacy multi-task history entries, contained 64 KiB log-tail previews, terminal-control sanitization, and terminal-oriented reducer/component/adapter tests.
+
 - Interactive `ariadne init` onboarding with repository-aware Default setup, full Custom setup, detected package scripts/agents/worktree capability, and pre-write YAML/file-change review.
 - Safe existing-config validation and replacement with mandatory diffs, disposable proposal validation, ignored timestamped backups, atomic writes, and rollback.
 - Configuration v4 with shared/worktree isolation, task workspace modes, retention, and bounded workspace preparation.
@@ -28,6 +38,9 @@
 
 ### Changed
 
+- The TUI is now a keyboard-first local workflow control surface rather than inspection-only. Coral frames/full-viewport layout, bold Cyan `>` focus, rounded zero-gutter panes, ASCII fallback, and `100/60/40` responsiveness remain unchanged.
+- Attached runtime state reconciles from persistence every second, on manual refresh, and on completion; durable records remain authoritative and schemas remain compatible.
+- SIGINT/SIGTERM in the TUI request active cancellation and wait a configuration-derived bounded finalization interval before terminal restoration. Confirmed `q` detachment restores immediately and keeps the foreground process alive until completion.
 - Plain non-TTY `ariadne init` remains portable and idempotent; `init --yes` opts into detected defaults, while `init --custom` requires an interactive terminal.
 - `ariadne init` and maintained examples emit v4. V3 `parallelSafe` tasks adapt to `workspaceMode` with warnings.
 - Shared mode remains compatible; mutable tasks are exclusive and read-only mutation fails `workspace.read-only`. Worktree mode permits concurrent mutable tasks in distinct checkouts.

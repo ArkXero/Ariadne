@@ -14,7 +14,11 @@ Ariadne is a local Node.js ESM CLI. Commands remain thin; versioned core modules
 8. `src/core/process-runner.ts` streams raw output to artifacts and coordinates timeout/interruption cleanup.
 9. `src/core/git.ts`, `src/core/forbidden-files.ts`, and `src/core/change-capture.ts` capture evidence, safe result commits, patches, previews, and sensitive omissions.
 10. `src/core/batch-persistence.ts` and `src/core/persistence.ts` atomically checkpoint versioned batch and child manifests.
-11. `src/core/promotion.ts` owns immutable apply/discard events and transactional preflight. Versioned readers tolerate corrupt/future history; canonical report views drive terminal, JSON, list, CSV, Markdown, and offline HTML output.
+11. `src/core/workflow-application.ts` is the narrow planning/control service shared by `plan`, `run`, `resume`, `rerun`, and the TUI. It exposes inspection and preview operations plus execution handles without changing persisted schemas.
+12. `src/core/workflow-runtime.ts` delivers immutable, process-local runtime events asynchronously through bounded subscriber queues. Process output is redacted before emission; persistence remains authoritative.
+13. `src/core/promotion.ts` owns immutable apply/discard events and transactional preflight. Versioned readers tolerate corrupt/future history; canonical report views drive terminal, JSON, list, CSV, Markdown, offline HTML, and the TUI.
+14. `src/tui/services.ts` owns the one-active-workflow registry and adapts application services/readers into typed views. `src/tui/runtime-state.ts` reduces provisional events, bounds live buffers, and reconciles batch records. Ink components never read files, invoke Git, calculate scores, or interpret persistence. `src/tui/terminal.ts` separately owns alternate-screen entry and idempotent restoration.
+15. `src/theme.ts` owns the shared brand/report palette plus Green, Cyan, and Deep Slate TUI semantic accents and the terminal/CSS adapters used by Init, the TUI, and offline reports.
 
 ## Ownership boundaries
 
@@ -22,6 +26,8 @@ Ariadne is a local Node.js ESM CLI. Commands remain thin; versioned core modules
 - The orchestrator owns workflow state, but never duplicates child logs, traces, policies, or scores.
 - Each child attempt remains independently reportable and links to its batch, plan, task, and globally increasing attempt number.
 - Renderers consume persisted/canonical outcomes; they do not recalculate policy or scheduler status.
+- Presentation surfaces consume semantic roles from `src/theme.ts`; they do not define independent palettes.
+- TUI components consume typed application-service and reducer data only. The registry lives outside React, owns execution handles/cancellation/completion, and permits one active batch. Result-ref existence checks remain behind the Git-owning workspace helper; persisted log reads and provisional live buffers are separately contained, bounded, and sanitized.
 - Resume reuses valid successful references and current configuration semantics; rerun always builds a new plan from current input.
 - Invocation/artifact roots are distinct from execution roots. Repository-relative paths and opaque repository identity are persisted. Prompts and environment values are excluded from manifests.
 
@@ -33,4 +39,4 @@ Every attempt and batch is checkpointed. Terminal child, batch, and invocation p
 
 ## Isolation boundary and non-goals
 
-Git worktrees isolate repository checkout state only. There is no container, remote execution, server, database, authentication, telemetry, hosted dashboard, TUI, source-control abstraction, automatic merge/push, or security-sandbox claim. Operating-system permissions, network, external paths, services, caches, credentials, and arbitrary subprocess side effects remain outside the isolation boundary.
+Git worktrees isolate repository checkout state only. There is no container, remote execution, server, database, authentication, telemetry, hosted dashboard, source-control abstraction, automatic merge/push, or security-sandbox claim. The local TUI is a control surface over the existing local scheduler, not a new execution or trust boundary. Operating-system permissions, network, external paths, services, caches, credentials, and arbitrary subprocess side effects remain outside the isolation boundary.

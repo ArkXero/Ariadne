@@ -23,6 +23,7 @@ import { loadTasks } from "./task-loader.js";
 import { getAriadneVersion } from "./version.js";
 import { captureResult } from "./change-capture.js";
 import { createWorkspace, createWorkspaceId, layerResultCommits, removeWorkspace, repositoryIdentity, transitionWorkspace } from "./workspace-manager.js";
+import type { WorkflowProcessPhase, WorkflowRuntimeEmitter } from "./workflow-runtime.js";
 import type {
   AriadneConfig,
   AriadneTask,
@@ -73,6 +74,7 @@ export interface TaskAttemptOptions {
   signal?: AbortSignal;
   now?: () => Date;
   randomId?: () => string;
+  runtime?: WorkflowRuntimeEmitter;
 }
 
 function relative(root: string, filePath: string): string {
@@ -273,6 +275,10 @@ async function runTask(options: {
   preparationCommands?: AriadneConfig["execution"]["worktree"]["preparation"]["commands"];
   preparationResults?: ProcessResult[];
   signal?: AbortSignal;
+  batchId?: string;
+  attempt?: number;
+  runId?: string;
+  runtime?: WorkflowRuntimeEmitter;
 }): Promise<TaskRunResult> {
   const started = new Date();
   const taskLifecycle: LifecycleEvent[] = [lifecycle("preparing", options.task.id)];
@@ -289,6 +295,27 @@ async function runTask(options: {
   let forbiddenPostAgent: ForbiddenSnapshot;
   let forbiddenFinal: ForbiddenSnapshot;
   const internalArtifactPrefix = ".ariadne";
+  const runtimeAttempt = options.attempt ?? 1;
+  const runtimeRunId = options.runId ?? "standalone";
+
+  const runObservedProcess = async (processOptions: Parameters<typeof runProcess>[0], phase: WorkflowProcessPhase, commandIndex: number): Promise<ProcessResult> => {
+    const displayCommand = persistedCommand(processOptions.spec).displayCommand;
+    options.runtime?.emit({ type: "process.started", taskId: options.task.id, attempt: runtimeAttempt, runId: runtimeRunId, phase, commandIndex, displayCommand });
+    const result = await runProcess({
+      ...processOptions,
+      onOutput: (stream, chunk) => options.runtime?.emit({
+        type: "process.output", taskId: options.task.id, attempt: runtimeAttempt, runId: runtimeRunId,
+        phase, commandIndex, stream, chunk
+      })
+    });
+    options.runtime?.emit({
+      type: "process.completed", taskId: options.task.id, attempt: runtimeAttempt, runId: runtimeRunId,
+      phase, commandIndex,
+      status: result.interrupted ? "interrupted" : result.exitCode === 0 && !result.timedOut && !result.spawnError ? "passed" : "failed",
+      exitCode: result.exitCode, timedOut: result.timedOut, ...(result.spawnError ? { spawnError: result.spawnError } : {})
+    });
+    return result;
+  };
 
   try {
     baseline = await captureRepositorySnapshot(options.projectRoot, [internalArtifactPrefix]);
@@ -341,7 +368,7 @@ async function runTask(options: {
           failures.push({ category: "policy_violation", code: "FORBIDDEN_PREPARATION_COMMAND", stage: "preparing", message: `Preparation command ${index + 1} was blocked by policy.`, taskId: options.task.id, details: { matches: blocked } });
           break;
         }
-        const processResult = await runProcess({
+        const processResult = await runObservedProcess({
           spec,
           projectRoot: options.projectRoot,
           artifactRoot: options.artifactRoot,
@@ -351,7 +378,7 @@ async function runTask(options: {
           terminationGraceMs: options.config.execution.termination_grace_ms,
           env: taskEnvironment(options.task, false),
           signal: options.signal
-        });
+        }, "preparation", index);
         options.preparationResults?.push(processResult);
         observed.push({ source: "preparation-config", representation: displayCommand, confidence: "executed" }, ...reportedCommands(processResult, "preparation-output"));
         if (processResult.exitCode !== 0 || processResult.timedOut || processResult.interrupted || processResult.spawnError) break;
@@ -392,7 +419,7 @@ async function runTask(options: {
     }
 
     taskLifecycle.push(lifecycle("agent_running", options.task.id));
-    agent = await runProcess({
+    agent = await runObservedProcess({
       spec: options.config.agent.command,
       projectRoot: options.projectRoot,
       artifactRoot: options.artifactRoot,
@@ -403,7 +430,7 @@ async function runTask(options: {
       terminationGraceMs: options.config.execution.termination_grace_ms,
       env: taskEnvironment(options.task, true),
       signal: options.signal
-    });
+    }, "agent", 0);
     taskLifecycle.push(lifecycle("agent_finished", options.task.id));
     observed.push({ source: "agent-config", representation: agentDisplay, confidence: "executed" }, ...reportedCommands(agent, "agent-output"));
     postAgent = await captureRepositorySnapshot(options.projectRoot, [internalArtifactPrefix]);
@@ -437,7 +464,7 @@ async function runTask(options: {
           continue;
         }
 
-        const processResult = await runProcess({
+        const processResult = await runObservedProcess({
           spec,
           projectRoot: options.projectRoot,
           artifactRoot: options.artifactRoot,
@@ -447,7 +474,7 @@ async function runTask(options: {
           terminationGraceMs: options.config.execution.termination_grace_ms,
           env: taskEnvironment(options.task, false),
           signal: options.signal
-        });
+        }, "verification", index);
         observed.push({ source: "verification-config", representation: displayCommand, confidence: "executed" }, ...reportedCommands(processResult, "verification-output"));
         verification.push({
           displayCommand,
@@ -571,6 +598,7 @@ export async function executeTaskAttempt(options: TaskAttemptOptions): Promise<R
   const runId = createRunId(startedAt, options.randomId?.());
   const paths = await createRunPaths(options.projectRoot, runId);
   const record = initialRunRecord({ runId, startedAt, ariadneVersion: await getAriadneVersion(), paths });
+  options.runtime?.emit({ type: "attempt.started", taskId: options.task.id, attempt: options.attempt, runId });
   record.workflow = { batchId: options.batchId, planId: options.planId, taskId: options.task.id, attempt: options.attempt };
   record.project.configPath = options.configPath;
   const isolation = options.isolation ?? options.config.execution.isolation;
@@ -649,7 +677,11 @@ export async function executeTaskAttempt(options: TaskAttemptOptions): Promise<R
       task: options.task,
       preparationCommands: workspaceRecord ? effectiveConfig.execution.worktree.preparation.commands : [],
       preparationResults: record.workspace?.preparation,
-      signal: options.signal
+      signal: options.signal,
+      batchId: options.batchId,
+      attempt: options.attempt,
+      runId,
+      runtime: options.runtime
     });
     record.results.push(result);
     if (workspaceRecord && record.workspace) {

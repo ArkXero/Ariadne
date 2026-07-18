@@ -17,11 +17,13 @@
   "scripts": {
     "clean": "node scripts/clean.mjs",
     "build": "pnpm clean && tsc -p tsconfig.json",
-    "check": "pnpm lint && pnpm build && pnpm test && pnpm smoke && pnpm test:package",
+    "check": "pnpm lint && pnpm build && pnpm test && pnpm test:tui-pty && pnpm smoke && pnpm test:package",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --testTimeout=15000",
     "test:package": "node scripts/package-smoke.mjs",
+    "test:tui-pty": "node scripts/tui-pty-smoke.mjs",
     "test:watch": "vitest",
+    "dogfood:tui": "pnpm build && node scripts/tui-dogfood.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "pnpm build && node dist/cli.js",
     "ariadne": "node dist/cli.js",
@@ -32,18 +34,41 @@
     "commander": "^14.0.2",
     "execa": "^9.6.0",
     "fs-extra": "^11.3.2",
+    "ink": "6.8.0",
     "minimatch": "^10.1.1",
+    "react": "^19.0.0",
+    "string-width": "^7.2.0",
+    "strip-ansi": "^7.1.0",
     "yaml": "^2.8.2",
     "zod": "^4.1.13"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^24.10.1",
+    "@types/react": "^19.2.17",
+    "ink-testing-library": "^4.0.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.8"
   },
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@10.34.1"
+  "packageManager": "pnpm@10.34.1",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "example": "examples",
+    "test": "tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ArkXero/Ariadne.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ArkXero/Ariadne/issues"
+  },
+  "homepage": "https://github.com/ArkXero/Ariadne#readme"
 }

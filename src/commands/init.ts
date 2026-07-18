@@ -14,6 +14,7 @@ import {
   type InitSettings
 } from "../core/init.js";
 import { detectRepository, type RepositoryDetection } from "../core/project-detector.js";
+import { withAriadneTerminalTheme } from "../theme.js";
 import type { ProcessSpec } from "../types/index.js";
 
 export { formatInitResult, initCommand } from "../core/init.js";
@@ -362,7 +363,9 @@ export async function initOnboardingCommand(cwd: string, options: InitOnboarding
   if (options.interactive) {
     if (options.color === false) process.env.NO_COLOR = process.env.NO_COLOR || "1";
     try {
-      return await runInteractiveInit(cwd, await createClackPrompt(), options.custom);
+      const prompt = await createClackPrompt();
+      const themeEnabled = options.color !== false && (!process.env.NO_COLOR || Boolean(process.env.FORCE_COLOR));
+      return await withAriadneTerminalTheme(themeEnabled, () => runInteractiveInit(cwd, prompt, options.custom));
     } catch (error) {
       if (error instanceof InitCancelled) return {
         kind: "skipped",

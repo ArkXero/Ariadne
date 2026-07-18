@@ -151,6 +151,34 @@ describe("process runner", () => {
     expect(await readFile(stdoutPath, "utf8")).toContain("[REDACTED]");
     expect(await readFile(stderrPath, "utf8")).toContain("password=[REDACTED]");
   });
+
+  it("streams redacted UTF-8 output without exposing split secrets or allowing observers to fail execution", async () => {
+    const cwd = await tempDir();
+    const chunks: string[] = [];
+    const result = await runProcess({
+      spec: {
+        kind: "exec",
+        file: "node",
+        args: ["-e", "const b=Buffer.from('token=stream-secret-value 🧵\\n'); process.stdout.write(b.subarray(0,b.length-3)); setTimeout(()=>process.stdout.write(b.subarray(b.length-3)),10)"]
+      },
+      projectRoot: cwd,
+      stdoutPath: path.join(cwd, "stream.out"),
+      stderrPath: path.join(cwd, "stream.err"),
+      timeoutMs: 1_000,
+      terminationGraceMs: 100,
+      sensitiveValues: ["stream-secret-value"],
+      onOutput: (_stream, chunk) => {
+        chunks.push(chunk);
+        if (chunks.length === 1) throw new Error("observer failure must be isolated");
+      }
+    });
+    const streamed = chunks.join("");
+    expect(result.exitCode).toBe(0);
+    expect(streamed).toContain("token=[REDACTED]");
+    expect(streamed).toContain("🧵");
+    expect(streamed).not.toContain("stream-secret-value");
+    expect(await readFile(path.join(cwd, "stream.out"), "utf8")).toBe(streamed);
+  });
 });
 
 describe("run lifecycle and persistence", () => {
