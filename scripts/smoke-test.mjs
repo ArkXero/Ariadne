@@ -11,7 +11,8 @@ const temporaryDirectories = [];
 
 function run(command, args, cwd, expected = 0, env = {}) {
   const windowsShim = process.platform === "win32" && (["npm", "pnpm", "corepack", "ariadne"].includes(command) || /\.(?:cmd|bat)$/i.test(command));
-  const result = spawnSync(command, args, { cwd, encoding: "utf8", env: { ...process.env, ...env }, shell: windowsShim });
+  const executable = windowsShim && /\s/.test(command) ? `"${command}"` : command;
+  const result = spawnSync(executable, args, { cwd, encoding: "utf8", env: { ...process.env, ...env }, shell: windowsShim });
   if (result.status !== expected) {
     throw new Error([`Command failed: ${command} ${args.join(" ")}`, `cwd: ${cwd}`, `expected ${expected}, got ${result.status}`, "stdout:", result.stdout, "stderr:", result.stderr].join("\n"));
   }
