@@ -4,7 +4,7 @@ import { execa } from "execa";
 import { afterEach, describe, expect, it } from "vitest";
 import { runWorkflow } from "../src/core/workflow-runner.js";
 import { resumeWorkflow } from "../src/core/workflow-control.js";
-import { applyResult, discardResult, promotionStatus } from "../src/core/promotion.js";
+import { applyResult, discardResult, previewApplyResult, promotionStatus } from "../src/core/promotion.js";
 import { exitCodeForBatch } from "../src/commands/run.js";
 import { cleanupTempDirs, initGit, tempDir } from "./helpers.js";
 
@@ -39,6 +39,8 @@ workspaceMode: mutable
 prompt: edit
 `);
   await initGit(cwd, {});
+  await execa("git", ["config", "--local", "user.name", ""], { cwd });
+  await execa("git", ["config", "--local", "user.email", ""], { cwd });
   return cwd;
 }
 
@@ -55,6 +57,7 @@ describe("isolated worktrees and promotion", () => {
     expect(attempt).toMatchObject({ outcome: "passed", applicable: true, workspaceId: expect.stringMatching(/^ws-/), resultRevision: expect.any(String) });
     expect((await execa("git", ["rev-parse", "HEAD"], { cwd })).stdout).toBe(beforeHead);
     await expect(execa("git", ["cat-file", "-e", `${attempt.resultRevision}^{commit}`], { cwd })).resolves.toBeDefined();
+    expect(await previewApplyResult(cwd, attempt.runId)).toMatchObject({ preflight: "clean", conflicts: [] });
 
     const promotion = await applyResult(cwd, attempt.runId);
     expect(promotion).toMatchObject({ status: "succeeded", includedRunIds: [attempt.runId], strategy: "preflight-squash-cherry-pick" });

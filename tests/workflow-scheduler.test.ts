@@ -149,7 +149,7 @@ describe("workflow scheduler", () => {
   });
 
   it("retries a cleaned-up timeout and then succeeds", async () => {
-    const cwd = await fixture([{ id: "a", retry: { attempts: 2, delayMs: 0, backoff: "fixed" } }], { a: { timeoutOnce: true } }, { agentTimeout: 100 });
+    const cwd = await fixture([{ id: "a", retry: { attempts: 2, delayMs: 0, backoff: "fixed" } }], { a: { timeoutOnce: true } }, { agentTimeout: 2_000 });
     const batch = await runWorkflow({ cwd });
     expect(batch.tasks[0].attempts.map((attempt) => attempt.outcome)).toEqual(["timeout", "passed"]);
     expect(batch.tasks[0].state).toBe("succeeded");

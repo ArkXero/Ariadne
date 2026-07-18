@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanupTempDirs, initGit, tempDir, writeProject } from "./helpers.js";
 
 const cliPath = path.resolve("dist/cli.js");
+const documentedCommands = ["init", "doctor", "plan", "run", "resume", "rerun", "list", "report", "tui", "changes", "diff", "status", "apply", "discard", "worktree"] as const;
 
 function cli(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, [cliPath, ...args], {
@@ -20,17 +21,20 @@ function cli(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): { status
 afterEach(cleanupTempDirs);
 
 describe("CLI integration", () => {
-  it("reads version metadata and exposes the documented commands", async () => {
-    const cwd = await tempDir();
+  it("reads version metadata and lists the documented commands", () => {
+    const cwd = process.cwd();
     const help = cli(cwd, ["--help"]);
     expect(help.status).toBe(0);
     expect(help.stdout).toMatch(/init|doctor|plan|run|resume|rerun|list|report|tui|changes|diff|status|apply|discard|worktree/);
     expect(cli(cwd, ["--version"]).stdout.trim()).toBe("0.1.0");
-    for (const command of ["init", "doctor", "plan", "run", "resume", "rerun", "list", "report", "tui", "changes", "diff", "status", "apply", "discard", "worktree"]) {
-      expect(cli(cwd, [command, "--help"]).stdout).toContain("Global Options:");
-      expect(cli(cwd, [command, "--help"]).stdout).toContain("--json");
-    }
-  }, 20_000);
+  });
+
+  it.each(documentedCommands)("exposes shared global options in %s help", (command) => {
+    const help = cli(process.cwd(), [command, "--help"]);
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain("Global Options:");
+    expect(help.stdout).toContain("--json");
+  });
 
   it("refuses non-interactive TUI use and rejects machine-output flags cleanly", async () => {
     const cwd = await tempDir();

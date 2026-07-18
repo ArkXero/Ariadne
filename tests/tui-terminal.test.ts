@@ -33,6 +33,12 @@ class TtyOutput extends PassThrough {
   getColorDepth() { return 8; }
 }
 
+async function waitFor(condition: () => boolean, description: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  if (!condition()) throw new Error(`Timed out waiting for ${description}.`);
+}
+
 async function runAndStop(kind: "q" | "SIGINT" | "SIGTERM"): Promise<{ output: string; raw: boolean }> {
   const stdin = new TtyInput();
   const stdout = new TtyOutput();
@@ -141,12 +147,11 @@ describe("terminal adapter", () => {
     let finished = false;
     stdout.setEncoding("utf8").on("data", (chunk) => { output += chunk; });
     const running = tuiCommand({ cwd: process.cwd(), stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream, stderr: stderr as unknown as NodeJS.WriteStream, service: attached.service, signalTarget: signals as unknown as Pick<NodeJS.Process, "once" | "off">, setExitCode: () => undefined }).then(() => { finished = true; });
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await waitFor(() => output.includes(ENTER_ALTERNATE_SCREEN), "the TUI to enter the alternate screen");
     stdin.write("q");
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(output).toContain("Detach TUI?");
+    await waitFor(() => output.includes("Detach TUI?"), "the detach confirmation");
     stdin.write("\r");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitFor(() => !stdin.isRaw && output.includes(LEAVE_ALTERNATE_SCREEN), "terminal restoration after detach");
     expect(stdin.isRaw).toBe(false);
     expect(output).toContain(LEAVE_ALTERNATE_SCREEN);
     expect(finished).toBe(false);

@@ -61,7 +61,7 @@ function promotion(kind: "apply" | "discard", status: "succeeded" | "discarded")
 }
 
 async function waitForFrame(lastFrame: () => string | undefined, text: string): Promise<string> {
-  for (let index = 0; index < 200; index += 1) {
+  for (let index = 0; index < 1_000; index += 1) {
     const frame = lastFrame() ?? "";
     if (frame.includes(text)) return frame;
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -69,7 +69,15 @@ async function waitForFrame(lastFrame: () => string | undefined, text: string): 
   throw new Error(`Frame never contained ${text}:\n${lastFrame() ?? ""}`);
 }
 
-const pause = () => new Promise((resolve) => setTimeout(resolve, 50));
+async function waitForSelectedAttention(lastFrame: () => string | undefined, label: string): Promise<void> {
+  for (let index = 0; index < 1_000; index += 1) {
+    if ((lastFrame() ?? "").split("\n").some((line) => line.includes(">") && line.includes(label))) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`Attention item never became selected: ${label}\n${lastFrame() ?? ""}`);
+}
+
+const pause = () => new Promise((resolve) => setTimeout(resolve, 250));
 
 function baseService(overrides: Partial<TuiDataService> = {}): TuiDataService {
   return {
@@ -84,6 +92,7 @@ function baseService(overrides: Partial<TuiDataService> = {}): TuiDataService {
 async function openResult(view: ReturnType<typeof render>): Promise<void> {
   await waitForFrame(view.lastFrame, "unapplied results");
   view.stdin.write("\t");
+  await waitForSelectedAttention(view.lastFrame, "unapplied results");
   await pause();
   view.stdin.write("\r");
   await waitForFrame(view.lastFrame, "Filter: Unapplied");
@@ -162,8 +171,13 @@ describe("change review TUI keyboard workflow", () => {
     const view = render(<AriadneTui service={service} color={false} unicode dimensions={{ width: 100, height: 28 }} />);
     await waitForFrame(view.lastFrame, "retained worktrees");
     view.stdin.write("\t");
+    await waitForSelectedAttention(view.lastFrame, "unapplied results");
     await pause();
-    for (let index = 0; index < 5; index += 1) { view.stdin.write("j"); await pause(); }
+    for (const label of ["application conflicts", "application failures", "ineligible results", "missing or corrupt results", "retained worktrees"]) {
+      view.stdin.write("j");
+      await waitForSelectedAttention(view.lastFrame, label);
+      await pause();
+    }
     view.stdin.write("\r");
     await waitForFrame(view.lastFrame, "Managed workspaces");
     await pause();

@@ -141,7 +141,7 @@ describe("change application service", () => {
       expect.objectContaining({ path: "new-name.txt", originalPath: "old-name.txt", changeType: "renamed", similarity: 100 }),
       expect.objectContaining({ path: "copy-target.txt", originalPath: "copy-source.txt", changeType: "copied", similarity: 100 }),
       expect.objectContaining({ path: "delete-me.txt", changeType: "deleted", old: expect.objectContaining({ objectId: expect.any(String) }) }),
-      expect.objectContaining({ path: "script.sh", changeType: "mode-changed", old: expect.objectContaining({ mode: "100644" }), new: expect.objectContaining({ mode: "100755" }) }),
+      ...(process.platform === "win32" ? [] : [expect.objectContaining({ path: "script.sh", changeType: "mode-changed", old: expect.objectContaining({ mode: "100644" }), new: expect.objectContaining({ mode: "100755" }) })]),
       expect.objectContaining({ path: "source-link", new: expect.objectContaining({ kind: "symlink", symlinkTarget: "copy-source.txt" }) })
     ]));
   });

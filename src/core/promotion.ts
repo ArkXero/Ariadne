@@ -21,6 +21,11 @@ import {
 } from "../types/index.js";
 
 const GIT_TIMEOUT_MS = 30_000;
+const MANAGED_COMMIT_CONFIG = [
+  "-c", "user.name=Ariadne",
+  "-c", "user.email=ariadne@local.invalid",
+  "-c", "commit.gpgSign=false"
+];
 
 export interface ApplyEligibilityCheck {
   id: string;
@@ -336,7 +341,7 @@ export async function previewApplyResult(rootInput: string, idOrPath: string): P
       if (added.exitCode !== 0) preflight = "unavailable";
       else {
         for (const child of data.closure) {
-          const picked = await git(checkout, ["cherry-pick", child.changeArtifact!.resultRevision!]);
+          const picked = await git(checkout, [...MANAGED_COMMIT_CONFIG, "cherry-pick", child.changeArtifact!.resultRevision!]);
           if (picked.exitCode !== 0) {
             const paths = (await git(checkout, ["diff", "--name-only", "--diff-filter=U"])).stdout.split(/\r?\n/).filter(Boolean).sort();
             conflicts = conflictsFor(child, paths);
@@ -443,7 +448,7 @@ async function applyResultUnlocked(rootInput: string, idOrPath: string, expected
     if (added.exitCode !== 0) throw new Error(`Could not create promotion preflight worktree: ${added.stderr}`);
     await transition(root, record, "preflighting", "Applying result closure in a temporary worktree.");
     for (const child of closure.filter((item) => item.changeArtifact?.resultRevision)) {
-      const picked = await git(checkout, ["cherry-pick", child.changeArtifact!.resultRevision!]);
+      const picked = await git(checkout, [...MANAGED_COMMIT_CONFIG, "cherry-pick", child.changeArtifact!.resultRevision!]);
       if (picked.exitCode !== 0) {
         record.conflictPaths = (await git(checkout, ["diff", "--name-only", "--diff-filter=U"])).stdout.split(/\r?\n/).filter(Boolean).sort();
         record.conflicts = conflictsFor(child, record.conflictPaths);
@@ -466,7 +471,7 @@ async function applyResultUnlocked(rootInput: string, idOrPath: string, expected
     record.promotionCommit = (await git(checkout, ["rev-parse", "HEAD"])).stdout.trim();
     if ((await git(root, ["rev-parse", "HEAD"])).stdout.trim() !== record.preApplyRevision) throw new AriadneError({ category: "promotion_conflict", code: "PROMOTION_TARGET_MOVED", stage: "validated", message: "The target HEAD changed during preflight; primary checkout was not modified." });
     await transition(root, record, "applying", "Cherry-picking the preflighted squashed commit into the primary checkout.");
-    const applied = await git(root, ["cherry-pick", record.promotionCommit]);
+    const applied = await git(root, [...MANAGED_COMMIT_CONFIG, "cherry-pick", record.promotionCommit]);
     if (applied.exitCode !== 0) {
       record.conflictPaths = (await git(root, ["diff", "--name-only", "--diff-filter=U"])).stdout.split(/\r?\n/).filter(Boolean).sort();
       record.conflicts = conflictsFor(run, record.conflictPaths);

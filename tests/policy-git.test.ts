@@ -106,7 +106,7 @@ describe("repository attribution", () => {
     await execa("git", ["add", "-A"], { cwd });
     const entries = (await captureRepositorySnapshot(cwd)).entries;
     expect(entries.some((entry) => entry.changeType === "renamed" && entry.path === "new.txt")).toBe(true);
-    expect(entries.find((entry) => entry.path === "mode.sh")?.changeType).toBe("mode-changed");
+    expect(entries.find((entry) => entry.path === "mode.sh")?.changeType).toBe(process.platform === "win32" ? undefined : "mode-changed");
   });
 
   it("combines agent and verification attribution without duplicates", () => {

@@ -17,6 +17,11 @@ import {
 } from "../types/index.js";
 
 const GIT_TIMEOUT_MS = 30_000;
+const MANAGED_COMMIT_CONFIG = [
+  "-c", "user.name=Ariadne",
+  "-c", "user.email=ariadne@local.invalid",
+  "-c", "commit.gpgSign=false"
+];
 
 interface GitResult {
   stdout: string;
@@ -149,7 +154,7 @@ export async function createWorkspace(options: {
 export async function layerResultCommits(projectRoot: string, record: WorkspaceRecord, revisions: string[]): Promise<string> {
   const checkout = path.join(projectRoot, record.path);
   for (const revision of revisions) {
-    const picked = await git(checkout, ["cherry-pick", revision]);
+    const picked = await git(checkout, [...MANAGED_COMMIT_CONFIG, "cherry-pick", revision]);
     if (picked.exitCode !== 0) {
       await git(checkout, ["cherry-pick", "--abort"]);
       await transitionWorkspace(projectRoot, record, "failed", `Dependency result ${revision} could not be layered.`);

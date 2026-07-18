@@ -219,6 +219,7 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
   let exitCode: number | null = null;
   let exitSignal: string | null = null;
   let spawnError: string | undefined;
+  let subprocessFailure: { code?: string; message?: string } | undefined;
   const emitOutput = (stream: "stdout" | "stderr", chunk: string): void => {
     if (!chunk) return;
     try { options.onOutput?.(stream, chunk); } catch { /* Runtime observers cannot fail process execution. */ }
@@ -270,11 +271,14 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
     const result = await subprocess;
     settled = true;
     if (terminationPromise) cleanup = await terminationPromise;
-    exitCode = typeof result.exitCode === "number" ? result.exitCode : null;
     exitSignal = result.signal ?? null;
-    spawnError = result.failed && result.exitCode === undefined && result.signal === undefined
+    const didNotSpawn = result.failed && result.signal === undefined
+      && (result.exitCode === undefined || result.code === "ENOENT" || result.code === "EACCES");
+    spawnError = didNotSpawn
       ? redactShellCommand(result.shortMessage || result.originalMessage || "Process could not be spawned.")
       : undefined;
+    exitCode = spawnError ? null : typeof result.exitCode === "number" ? result.exitCode : null;
+    subprocessFailure = result.failed ? { code: result.code, message: result.shortMessage || result.originalMessage } : undefined;
   } catch (error) {
     settled = true;
     if (terminationPromise) cleanup = await terminationPromise;
@@ -295,6 +299,14 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
     emitOutput("stdout", finalStdout);
     emitOutput("stderr", finalStderr);
   }
+  const stdoutResult = stdoutPreview.result();
+  const stderrResult = stderrPreview.result();
+  const windowsMissingExecutable = options.spec.kind === "exec" && process.platform === "win32" && exitCode !== 0
+    && /is not recognized as an internal or external command|the system cannot find the file specified/i.test(`${stdoutResult.head}\n${stdoutResult.tail}\n${stderrResult.head}\n${stderrResult.tail}`);
+  if (!spawnError && windowsMissingExecutable) {
+    spawnError = redactShellCommand(subprocessFailure?.message || `Process could not be spawned: ${actual.file}`);
+    exitCode = null;
+  }
   return {
     kind: options.spec.kind,
     executable: persisted.executable,
@@ -312,8 +324,8 @@ export async function runProcess(options: RunProcessOptions): Promise<ProcessRes
     spawnError,
     stdoutArtifact: path.relative(options.artifactRoot ?? options.projectRoot, options.stdoutPath).split(path.sep).join("/"),
     stderrArtifact: path.relative(options.artifactRoot ?? options.projectRoot, options.stderrPath).split(path.sep).join("/"),
-    stdoutPreview: stdoutPreview.result(),
-    stderrPreview: stderrPreview.result(),
+    stdoutPreview: stdoutResult,
+    stderrPreview: stderrResult,
     cleanup,
     redactionApplied: stdoutRedactor.applied || stderrRedactor.applied
   };
