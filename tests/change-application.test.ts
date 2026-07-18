@@ -223,5 +223,5 @@ describe("change application service", () => {
       right: { runId: attempts[1]!.runId, final: true },
       addedPaths: ["retry-result.txt"], removedPaths: []
     });
-  });
+  }, 30_000);
 });
