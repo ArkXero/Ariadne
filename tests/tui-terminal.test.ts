@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { render } from "ink";
 import { describe, expect, it } from "vitest";
 import { tuiCommand, type TuiCommandOptions } from "../src/commands/tui.js";
 import { createTerminalSession, ENTER_ALTERNATE_SCREEN, LEAVE_ALTERNATE_SCREEN, supportsTuiColor, supportsUnicodeTerminal } from "../src/tui/terminal.js";
@@ -143,10 +144,11 @@ describe("terminal adapter", () => {
     const stderr = new TtyOutput();
     const signals = new EventEmitter();
     const attached = attachedService();
+    const renderTui: NonNullable<TuiCommandOptions["renderTui"]> = (tree, options) => render(tree, { ...options, debug: true });
     let output = "";
     let finished = false;
     stdout.setEncoding("utf8").on("data", (chunk) => { output += chunk; });
-    const running = tuiCommand({ cwd: process.cwd(), stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream, stderr: stderr as unknown as NodeJS.WriteStream, service: attached.service, signalTarget: signals as unknown as Pick<NodeJS.Process, "once" | "off">, setExitCode: () => undefined }).then(() => { finished = true; });
+    const running = tuiCommand({ cwd: process.cwd(), stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream, stderr: stderr as unknown as NodeJS.WriteStream, service: attached.service, signalTarget: signals as unknown as Pick<NodeJS.Process, "once" | "off">, setExitCode: () => undefined, renderTui }).then(() => { finished = true; });
     await waitFor(() => output.includes(ENTER_ALTERNATE_SCREEN), "the TUI to enter the alternate screen");
     await waitFor(() => stdin.listenerCount("readable") > 0, "Ink to subscribe to terminal input");
     stdin.write("q");

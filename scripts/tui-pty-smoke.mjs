@@ -12,6 +12,13 @@ const driver = path.join(repoRoot, "scripts", "tui-pty-driver.py");
 const fixture = await mkdtemp(path.join(os.tmpdir(), "ariadne-tui-pty-"));
 const reviewFixture = await mkdtemp(path.join(os.tmpdir(), "ariadne-tui-review-pty-"));
 
+function interactiveEnvironment(extra = {}) {
+  const environment = { ...process.env, TERM: "xterm-256color", LANG: "en_US.UTF-8", NO_COLOR: "1", ...extra };
+  delete environment.CI;
+  delete environment.CONTINUOUS_INTEGRATION;
+  return environment;
+}
+
 function initialize(cwd) {
   const git = spawnSync("git", ["init", "--quiet"], { cwd, encoding: "utf8" });
   if (git.status !== 0) throw new Error(git.stderr || "git init failed");
@@ -70,7 +77,7 @@ try {
         encoding: "utf8",
         timeout: 45_000,
         maxBuffer: 10 * 1024 * 1024,
-        env: { ...process.env, TERM: "xterm-256color", LANG: "en_US.UTF-8", NO_COLOR: "1" }
+        env: interactiveEnvironment()
       });
       if (result.error) throw result.error;
       if (result.status !== 0) throw new Error(`TUI PTY driver failed (${result.status ?? result.signal}).\n${result.stdout}\n${result.stderr}`);
@@ -83,7 +90,7 @@ try {
         encoding: "utf8",
         timeout: 45_000,
         maxBuffer: 10 * 1024 * 1024,
-        env: { ...process.env, TERM: "xterm-256color", LANG: "en_US.UTF-8", NO_COLOR: "1", ARIADNE_PTY_MODE: "review" }
+        env: interactiveEnvironment({ ARIADNE_PTY_MODE: "review" })
       });
       if (review.error) throw review.error;
       if (review.status !== 0) throw new Error(`TUI PTY review driver failed (${review.status ?? review.signal}).\n${review.stdout}\n${review.stderr}`);
