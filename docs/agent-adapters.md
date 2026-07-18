@@ -11,7 +11,7 @@ agent:
   command:
     kind: exec
     file: codex
-    args: [exec, --sandbox, workspace-write, -]
+    args: [exec, --sandbox, workspace-write, "-"]
   timeout_ms: 600000
 ```
 

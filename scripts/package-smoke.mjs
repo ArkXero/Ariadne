@@ -141,7 +141,7 @@ try {
     assert(names.includes(required), `Package is missing ${required}`);
   }
 
-  const installRoot = path.join(temporaryRoot, "install");
+  const installRoot = path.join(temporaryRoot, "install with space ünicode");
   await mkdir(installRoot);
   await writeFile(path.join(installRoot, "package.json"), JSON.stringify({ private: true }));
   const tarball = path.join(temporaryRoot, metadata.filename);
@@ -154,6 +154,7 @@ try {
   assert((await readFile(installedCli, "utf8")).startsWith("#!/usr/bin/env node"), "Installed CLI is missing its Node shebang.");
   const installedPackage = JSON.parse(await readFile(path.join(packageDirectory, "package.json"), "utf8"));
   assert(installedPackage.bin?.ariadne === "dist/cli.js", "Installed package bin metadata is invalid.");
+  assert(installedPackage.license === "Apache-2.0" && installedPackage.main === undefined, "Installed package metadata is stale or misleading.");
   for (const file of await packageTextFiles(packageDirectory)) {
     const contents = await readFile(file, "utf8");
     assert(!contents.includes(repoRoot), `Packaged file contains the source-checkout path: ${path.relative(packageDirectory, file)}`);
@@ -169,6 +170,24 @@ try {
   }
   const version = run(binary, ["--version"], installRoot).stdout.trim();
   assert(version === installedPackage.version, `Installed CLI version ${version} does not match package ${installedPackage.version}`);
+  assert(run(process.execPath, [installedCli, "--version"], installRoot).stdout.trim() === version, "Direct installed CLI invocation returned the wrong version.");
+
+  const globalRoot = path.join(temporaryRoot, "npm global prefix");
+  run("npm", ["install", "--global", "--prefix", globalRoot, "--ignore-scripts", tarball], temporaryRoot);
+  const globalBinary = process.platform === "win32" ? path.join(globalRoot, "ariadne.cmd") : path.join(globalRoot, "bin", "ariadne");
+  assert(run(globalBinary, ["--version"], temporaryRoot).stdout.trim() === version, "npm global tarball installation returned the wrong version.");
+
+  const npmExec = run("npm", ["exec", "--yes", `--package=${tarball}`, "--", "ariadne", "--version"], temporaryRoot);
+  assert(npmExec.stdout.trim() === version, "npm exec tarball invocation returned the wrong version.");
+
+  const pnpmInstallRoot = path.join(temporaryRoot, "pnpm local install");
+  await mkdir(pnpmInstallRoot);
+  await writeFile(path.join(pnpmInstallRoot, "package.json"), JSON.stringify({ private: true }));
+  run("pnpm", ["add", "--ignore-scripts", tarball], pnpmInstallRoot);
+  const pnpmBinary = process.platform === "win32"
+    ? path.join(pnpmInstallRoot, "node_modules", ".bin", "ariadne.CMD")
+    : path.join(pnpmInstallRoot, "node_modules", ".bin", "ariadne");
+  assert(run(pnpmBinary, ["--version"], pnpmInstallRoot).stdout.trim() === version, "pnpm local tarball installation returned the wrong version.");
   const tuiRefusal = run(binary, ["tui"], installRoot, 2);
   assert(tuiRefusal.stdout === "" && !tuiRefusal.stderr.includes("\u001B") && tuiRefusal.stderr.includes("interactive stdin/stdout"), "Installed TUI non-TTY refusal was not clean.");
   const installedPty = run(process.execPath, [path.join(repoRoot, "scripts", "tui-pty-smoke.mjs")], installRoot, 0, { ARIADNE_TUI_CLI: installedCli });
@@ -182,13 +201,17 @@ try {
     run(binary, args, installRoot, 2);
   }
 
-  const passing = path.join(temporaryRoot, "fixture-passing");
+  const passing = path.join(temporaryRoot, "fixture passing ünicode");
   await mkdir(passing);
   run("git", ["init", "--quiet"], passing);
   run(binary, ["init"], passing);
   const hostileName = "=2+3 | <script>alert(1)</script><img src=x onerror=alert(1)>";
   await writeFile(path.join(passing, ".ariadne", "tasks", "example.yml"), `${JSON.stringify({ id: "example", name: hostileName, prompt: "Complete the installed-package task." }, null, 2)}\n`);
   run(binary, ["doctor", "--quiet"], passing);
+  const nested = path.join(passing, "nested directory");
+  await mkdir(nested);
+  const nestedResult = run(binary, ["plan", "--all", "--json"], nested, 2);
+  assert(nestedResult.stdout === "" && nestedResult.stderr.includes("Config not found"), "Nested invocation did not fail safely with project-root guidance.");
   const planned = JSON.parse(run(binary, ["plan", "--all", "--json"], passing).stdout);
   assert(planned.order?.join(",") === "example", "Installed workflow plan was invalid.");
   const terminalRun = run(binary, ["run", "--quiet"], passing);
@@ -216,7 +239,7 @@ try {
   const listCsv = run(binary, ["list", "--format", "csv", "--quiet"], passing).stdout;
   const listMarkdown = run(binary, ["list", "--format", "markdown", "--quiet"], passing).stdout;
   assert(listCsv.includes("completed,passed") && listCsv.includes("'=2+3"), "CSV output contradicts status or failed formula neutralization.");
-  assert(listMarkdown.includes("completed | passed") && listMarkdown.includes("\\|"), "Markdown output contradicts status or failed pipe escaping.");
+  assert(listMarkdown.includes("completed | passed") && listMarkdown.includes("\\|") && listMarkdown.includes("&lt;script&gt;") && !listMarkdown.includes("<script>"), "Markdown output contradicted status or failed hostile-HTML escaping.");
   const batchList = JSON.parse(run(binary, ["list", "--batches", "--format", "json", "--quiet"], passing).stdout);
   assert(batchList[0]?.batch_id === secondBatch.record.batchId && batchList[0]?.status === "succeeded", "Batch history contradicts latest batch.");
   const reportResult = run(binary, ["report", "--json", "--quiet"], passing);
@@ -395,7 +418,7 @@ try {
     interruption = "passed";
   }
 
-  console.log(`packed package flow ok: ${metadata.filename} (${metadata.entryCount} files; scenarios=pass,usage,worktree,ignored,review-export,apply,conflict-rollback,discard-idempotency,cleanup-dry-run,cleanup-history,agent,preparation,verification,policy,dirty,timeout,retry,dependency,resume,rerun,tui-pty; interruption=${interruption})`);
+  console.log(`packed package flow ok: ${metadata.filename} (${metadata.entryCount} files; installs=npm-local,npm-global,npm-exec,pnpm-local,direct; paths=space,unicode,nested-safe-failure; scenarios=pass,usage,worktree,ignored,review-export,apply,conflict-rollback,discard-idempotency,cleanup-dry-run,cleanup-history,agent,preparation,verification,policy,dirty,timeout,retry,dependency,resume,rerun,tui-pty; interruption=${interruption})`);
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
 }

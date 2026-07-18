@@ -9,6 +9,7 @@ import { captureRepositorySnapshot } from "./git.js";
 import { loadRunFile, loadRunHistory, resolveRunFile } from "./run-reader.js";
 import { AriadneError } from "./errors.js";
 import { withManagementLock } from "./management-lock.js";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 import { loadWorkspace, removeWorkspace, repositoryIdentity, resultRefExists } from "./workspace-manager.js";
 import { PromotionRecordSchema } from "../schema/promotion-record.js";
 import {
@@ -102,7 +103,7 @@ async function transition(root: string, record: PromotionRecord, status: Promoti
 export async function loadPromotions(root: string): Promise<Array<{ path: string; record?: PromotionRecord; warning?: string }>> {
   const directory = promotionsRoot(root);
   const files = (await fs.readdir(directory).catch(() => [] as string[])).filter((name) => name.endsWith(".json")).sort();
-  return Promise.all(files.map(async (name) => {
+  return mapWithConcurrency(files, DEFAULT_IO_CONCURRENCY, async (name) => {
     const filePath = path.join(directory, name);
     const parsed = PromotionRecordSchema.safeParse(await fs.readJson(filePath).catch(() => undefined));
     if (!parsed.success) return { path: filePath, warning: `Promotion record is corrupt: ${filePath}` };
@@ -128,7 +129,7 @@ export async function loadPromotions(root: string): Promise<Array<{ path: string
       ...(value.kind === "discard" && value.status === "discarded" ? { discard: { resultRefRemoved: true, historyPreserved: true as const } } : {})
     };
     return { path: filePath, record };
-  }));
+  });
 }
 
 async function currentPromotionState(root: string, runId: string): Promise<{ applied?: PromotionRecord; discarded?: PromotionRecord }> {

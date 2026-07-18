@@ -5,6 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { execa } from "execa";
 import fs from "fs-extra";
 import { atomicWriteJson } from "./atomic.js";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 import { AriadneError } from "./errors.js";
 import { WorkspaceRecordSchema } from "../schema/workspace-record.js";
 import {
@@ -232,7 +233,7 @@ export async function loadWorkspace(projectRoot: string, workspaceIdOrPath: stri
 export async function listWorkspaces(projectRoot: string): Promise<Array<{ record?: WorkspaceRecord; metadataPath: string; warning?: string }>> {
   const root = path.join(projectRoot, ".ariadne", "worktrees");
   const names = await fs.readdir(root).catch(() => [] as string[]);
-  const results = await Promise.all(names.sort().map(async (name) => {
+  const results = await mapWithConcurrency(names.sort(), DEFAULT_IO_CONCURRENCY, async (name) => {
     const metadataPath = path.join(root, name, "workspace.json");
     try {
       const record = await loadWorkspace(projectRoot, metadataPath);
@@ -244,7 +245,7 @@ export async function listWorkspaces(projectRoot: string): Promise<Array<{ recor
       return { record, metadataPath };
     }
     catch (error) { return { metadataPath, warning: error instanceof Error ? error.message : String(error) }; }
-  }));
+  });
   return results;
 }
 

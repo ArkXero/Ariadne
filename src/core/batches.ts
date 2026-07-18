@@ -83,7 +83,12 @@ export function formatBatchCsv(values: BatchListEntry[]): string {
 }
 
 export function formatBatchMarkdown(values: BatchListEntry[]): string {
-  const escape = (value: unknown) => String(value ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+  const escape = (value: unknown) => String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\|/g, "\\|")
+    .replace(/\r?\n/g, "<br>");
   return [`| ${headers.join(" | ")} |`, `| ${headers.map(() => "---").join(" | ")} |`, ...rows(values).map((row) => `| ${headers.map((header) => escape(row[header])).join(" | ")} |`), ""].join("\n");
 }
 

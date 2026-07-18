@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { execa } from "execa";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 import fs from "fs-extra";
 import type { ChangeEvidence, RepositoryChangeType, RepositoryEntry, RepositorySnapshot } from "../types/index.js";
 
@@ -313,7 +314,7 @@ export async function getGitDiff(cwd: string, excludedPrefixes: string[] = []): 
     git(cwd, ["diff", "--cached", "--relative", "--no-ext-diff", "--binary", "--", "."]),
     getUntrackedFiles(cwd)
   ]);
-  const untrackedDiffs = await Promise.all(untracked.filter((filePath) => !excluded(filePath, excludedPrefixes)).map((filePath) => buildUntrackedFileDiff(cwd, filePath)));
+  const untrackedDiffs = await mapWithConcurrency(untracked.filter((filePath) => !excluded(filePath, excludedPrefixes)), DEFAULT_IO_CONCURRENCY, (filePath) => buildUntrackedFileDiff(cwd, filePath));
   return [unstaged.stdout.trimEnd(), staged.stdout.trimEnd(), ...untrackedDiffs.map((value) => value.trimEnd())].filter(Boolean).join("\n\n");
 }
 

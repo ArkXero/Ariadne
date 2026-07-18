@@ -16,13 +16,19 @@ async function fixture(tasks: FixtureTask[], behavior: Record<string, Record<str
   await writeFile(path.join(cwd, "target.txt"), "initial\n");
   await writeFile(path.join(cwd, "behavior.json"), JSON.stringify(behavior));
   await writeFile(path.join(cwd, "agent.mjs"), `
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 const id = process.env.ARIADNE_TASK_ID;
 const behavior = JSON.parse(await readFile("behavior.json", "utf8"))[id] ?? {};
 await mkdir(".ariadne/control", { recursive: true });
 const event = async (kind) => appendFile(".ariadne/control/events.jsonl", JSON.stringify({ id, kind, at: Date.now() }) + "\\n");
 await event("start");
 if (behavior.marker) await writeFile(".ariadne/control/marker", id);
+if (behavior.gateCount) {
+  await writeFile(".ariadne/control/" + id + ".ready", "ready\\n");
+  while ((await readdir(".ariadne/control")).filter((name) => name.endsWith(".ready")).length < behavior.gateCount) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 if (behavior.timeoutOnce) {
   const counter = ".ariadne/control/" + id + ".timeout-count";
   const value = Number(await readFile(counter, "utf8").catch(() => "0")) + 1;
@@ -78,12 +84,12 @@ describe("workflow scheduler", () => {
   });
 
   it("runs only declared-safe tasks concurrently and respects the bound", async () => {
-    const cwd = await fixture([{ id: "a", parallelSafe: true }, { id: "b", parallelSafe: true }, { id: "c", parallelSafe: true }], { a: { delay: 80 }, b: { delay: 80 }, c: { delay: 20 } }, { concurrency: 2 });
+    const cwd = await fixture([{ id: "a", parallelSafe: true }, { id: "b", parallelSafe: true }, { id: "c", parallelSafe: true }], { a: { gateCount: 2 }, b: { gateCount: 2 }, c: {} }, { concurrency: 2, agentTimeout: 5_000 });
     const batch = await runWorkflow({ cwd });
     const values = await events(cwd);
     let active = 0;
     let maximum = 0;
-    for (const event of values.sort((a, b) => a.at - b.at || (a.kind === "start" ? -1 : 1))) {
+    for (const event of values) {
       active += event.kind === "start" ? 1 : -1;
       maximum = Math.max(maximum, active);
     }

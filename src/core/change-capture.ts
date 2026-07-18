@@ -3,6 +3,7 @@ import path from "node:path";
 import { execa } from "execa";
 import fs from "fs-extra";
 import { atomicWriteFile, atomicWriteJson } from "./atomic.js";
+import { DEFAULT_PROCESS_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 import { matchesFilePattern, normalizeRepositoryPath } from "./path-match.js";
 import {
   CURRENT_CHANGE_ARTIFACT_SCHEMA_VERSION,
@@ -188,7 +189,7 @@ async function enrichChanges(
   resultRevision: string,
   captured: CapturedChange[]
 ): Promise<CapturedChange[]> {
-  return Promise.all(captured.map(async (item) => {
+  return mapWithConcurrency(captured, DEFAULT_PROCESS_CONCURRENCY, async (item) => {
     const [oldValue, newValue, diff] = await Promise.all([
       item.changeType === "added" || item.changeType === "untracked" ? undefined : objectMetadata(checkout, preparedRevision, item.originalPath ?? item.path),
       item.changeType === "deleted" ? undefined : objectMetadata(checkout, resultRevision, item.path),
@@ -197,7 +198,7 @@ async function enrichChanges(
     return {
       ...item, changeId: changeId(item), ...(oldValue ? { old: oldValue } : {}), ...(newValue ? { new: newValue } : {}), diff
     };
-  }));
+  });
 }
 
 export async function captureResult(options: {

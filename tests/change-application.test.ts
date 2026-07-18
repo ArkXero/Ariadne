@@ -61,7 +61,7 @@ prompt: review
 describe("change application service", () => {
   it("captures v2 file artifacts, pages bounded diffs, and exports without clobbering", async () => {
     const cwd = await fixture({
-      agent: `import { writeFile } from "node:fs/promises"; await writeFile("large.txt", Array.from({length: 900}, (_, index) => "line-" + index).join("\\n") + "\\n");`
+      agent: `import { writeFile } from "node:fs/promises"; await writeFile("large.txt", Array.from({length: 20000}, (_, index) => "line-" + index).join("\\n") + "\\n");`
     });
     const batch = await runWorkflow({ cwd });
     const attempt = batch.tasks[0]!.attempts[0]!;
@@ -83,6 +83,7 @@ describe("change application service", () => {
 
     const first = await loadFileDiff(cwd, attempt.runId, change.changeId);
     expect(first).toMatchObject({ status: "ready", cursor: "start", truncated: true });
+    expect(first.totalBytes).toBeGreaterThan(128 * 1024);
     expect(first.lines.length).toBeLessThanOrEqual(400);
     expect(first.nextCursor).toBeTruthy();
     expect(first.nextCursor).not.toMatch(/^\d+$/);

@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -42,3 +45,16 @@ jobs:
           path: diagnostics/*.tgz
           if-no-files-found: ignore
           retention-days: 5
+
+  release-gate:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: corepack prepare pnpm@10.34.1 --activate
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm release:check

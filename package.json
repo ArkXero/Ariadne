@@ -17,10 +17,14 @@
   "scripts": {
     "clean": "node scripts/clean.mjs",
     "build": "pnpm clean && tsc -p tsconfig.json",
-    "check": "pnpm lint && pnpm build && pnpm test && pnpm test:tui-pty && pnpm smoke && pnpm test:package",
+    "check": "pnpm lint && pnpm build && pnpm test && pnpm test:tui-pty && pnpm smoke && pnpm test:package && pnpm test:release",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "prepack": "pnpm --silent build",
+    "release:check": "node scripts/release-check.mjs",
+    "release:profile": "node scripts/release-profile.mjs",
     "test": "vitest run --testTimeout=15000",
     "test:package": "node scripts/package-smoke.mjs",
+    "test:release": "node scripts/release-contract.mjs",
     "test:tui-pty": "node scripts/tui-pty-smoke.mjs",
     "test:watch": "vitest",
     "dogfood:tui": "pnpm build && node scripts/tui-dogfood.mjs",
@@ -54,19 +58,18 @@
     "node": ">=20"
   },
   "packageManager": "pnpm@10.34.1",
-  "main": "index.js",
-  "directories": {
-    "doc": "docs",
-    "example": "examples",
-    "test": "tests"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ArkXero/Ariadne.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "ai",
+    "cli",
+    "coding-agents",
+    "evaluation",
+    "reliability"
+  ],
+  "license": "Apache-2.0",
   "bugs": {
     "url": "https://github.com/ArkXero/Ariadne/issues"
   },

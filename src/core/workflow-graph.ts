@@ -15,6 +15,44 @@ function immutableCopy<T>(value: T): T {
   return value;
 }
 
+class OrderedIds {
+  private readonly values: string[] = [];
+
+  get size(): number {
+    return this.values.length;
+  }
+
+  push(value: string): void {
+    this.values.push(value);
+    let index = this.values.length - 1;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (compareIds(this.values[parent], this.values[index]) <= 0) break;
+      [this.values[parent], this.values[index]] = [this.values[index], this.values[parent]];
+      index = parent;
+    }
+  }
+
+  pop(): string | undefined {
+    const first = this.values[0];
+    const last = this.values.pop();
+    if (this.values.length === 0 || last === undefined) return first;
+    this.values[0] = last;
+    let index = 0;
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      let smallest = index;
+      if (left < this.values.length && compareIds(this.values[left], this.values[smallest]) < 0) smallest = left;
+      if (right < this.values.length && compareIds(this.values[right], this.values[smallest]) < 0) smallest = right;
+      if (smallest === index) break;
+      [this.values[index], this.values[smallest]] = [this.values[smallest], this.values[index]];
+      index = smallest;
+    }
+    return first;
+  }
+}
+
 export class WorkflowGraph {
   readonly tasks: readonly AriadneTask[];
   private readonly byKey: Map<string, AriadneTask>;
@@ -29,9 +67,16 @@ export class WorkflowGraph {
       retry: Object.freeze({ ...task.retry }),
       ...(task.verify ? { verify: Object.freeze(task.verify.map((spec) => spec.kind === "exec" ? Object.freeze({ ...spec, args: Object.freeze([...spec.args]) as unknown as string[] }) : Object.freeze({ ...spec }))) as unknown as AriadneTask["verify"] } : {})
     }));
-    const duplicate = tasks.find((task, index) => tasks.findIndex((candidate) => candidate.id.toLowerCase() === task.id.toLowerCase()) !== index);
-    if (duplicate) {
-      const conflicts = tasks.filter((task) => task.id.toLowerCase() === duplicate.id.toLowerCase());
+    const tasksByKey = new Map<string, AriadneTask[]>();
+    for (const task of tasks) {
+      const key = task.id.toLowerCase();
+      const matches = tasksByKey.get(key) ?? [];
+      matches.push(task);
+      tasksByKey.set(key, matches);
+    }
+    const conflicts = [...tasksByKey.values()].find((matches) => matches.length > 1);
+    if (conflicts) {
+      const duplicate = conflicts[0];
       throw new AriadneError({
         category: "task_loading", code: "TASK_ID_DUPLICATE", stage: "validated", fieldPath: "id", offendingValue: duplicate.id,
         message: `Duplicate task id "${duplicate.id}" in ${conflicts.map((task) => task.file).join(", ")}.`,
@@ -113,12 +158,13 @@ export class WorkflowGraph {
   closure(rootIds: readonly string[]): string[] {
     const roots = rootIds.length === 0 ? this.tasks.map((task) => task.id) : rootIds.map((id) => this.require(id).id);
     const included = new Set<string>();
-    const visit = (id: string): void => {
-      if (included.has(id)) return;
+    const pending = [...roots];
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      if (included.has(id)) continue;
       included.add(id);
-      for (const dependency of this.dependencyIds(id)) visit(dependency);
-    };
-    for (const id of roots) visit(id);
+      pending.push(...this.dependencyIds(id));
+    }
     return [...included].sort(compareIds);
   }
 
@@ -127,20 +173,18 @@ export class WorkflowGraph {
     const remaining = new Map<string, number>();
     const levels = new Map<string, number>();
     for (const id of included) remaining.set(id, this.dependencyIds(id).filter((dependency) => included.has(dependency)).length);
-    const ready = [...remaining].filter(([, count]) => count === 0).map(([id]) => id).sort(compareIds);
+    const ready = new OrderedIds();
+    for (const [id, count] of remaining) if (count === 0) ready.push(id);
     const order: string[] = [];
-    while (ready.length > 0) {
-      const id = ready.shift()!;
+    while (ready.size > 0) {
+      const id = ready.pop()!;
       order.push(id);
       const dependencies = this.dependencyIds(id).filter((dependency) => included.has(dependency));
       levels.set(id, dependencies.length === 0 ? 0 : Math.max(...dependencies.map((dependency) => levels.get(dependency) ?? 0)) + 1);
       for (const dependent of this.dependentIds(id).filter((candidate) => included.has(candidate))) {
         const next = (remaining.get(dependent) ?? 0) - 1;
         remaining.set(dependent, next);
-        if (next === 0) {
-          ready.push(dependent);
-          ready.sort(compareIds);
-        }
+        if (next === 0) ready.push(dependent);
       }
     }
     const grouped: string[][] = [];
@@ -149,26 +193,26 @@ export class WorkflowGraph {
   }
 
   private assertAcyclic(): void {
-    const state = new Map<string, "visiting" | "visited">();
-    const stack: string[] = [];
-    const visit = (id: string): void => {
-      const current = state.get(id);
-      if (current === "visited") return;
-      if (current === "visiting") {
-        const index = stack.indexOf(id);
-        const cycle = [...stack.slice(index), id];
-        throw new AriadneError({
-          category: "task_loading", code: "TASK_DEPENDENCY_CYCLE", stage: "validated",
-          message: `Task dependency cycle detected: ${cycle.join(" -> ")}.`,
-          correction: "Remove at least one dependency edge from the cycle.", details: { cycle }
-        });
+    const remaining = new Map(this.tasks.map((task) => [task.id, this.dependencies.get(task.id)?.length ?? 0]));
+    const ready = new OrderedIds();
+    for (const [id, count] of remaining) if (count === 0) ready.push(id);
+    let visited = 0;
+    while (ready.size > 0) {
+      const id = ready.pop()!;
+      visited += 1;
+      for (const dependent of this.dependents.get(id) ?? []) {
+        const next = (remaining.get(dependent) ?? 0) - 1;
+        remaining.set(dependent, next);
+        if (next === 0) ready.push(dependent);
       }
-      state.set(id, "visiting");
-      stack.push(id);
-      for (const dependency of this.dependencies.get(id) ?? []) visit(dependency);
-      stack.pop();
-      state.set(id, "visited");
-    };
-    for (const task of this.tasks) visit(task.id);
+    }
+    if (visited !== this.tasks.length) {
+      const cycle = this.tasks.map((task) => task.id).filter((id) => (remaining.get(id) ?? 0) > 0);
+      throw new AriadneError({
+        category: "task_loading", code: "TASK_DEPENDENCY_CYCLE", stage: "validated",
+        message: `Task dependency cycle detected among: ${cycle.join(", ")}.`,
+        correction: "Remove at least one dependency edge from the cycle.", details: { cycle }
+      });
+    }
   }
 }

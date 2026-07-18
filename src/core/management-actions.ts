@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "fs-extra";
 import { atomicWriteJson } from "./atomic.js";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 import { ManagementActionRecordSchema } from "../schema/management-action-record.js";
 import {
   CURRENT_MANAGEMENT_ACTION_SCHEMA_VERSION,
@@ -47,9 +48,9 @@ export async function persistManagementAction(root: string, record: ManagementAc
 export async function loadManagementActions(root: string): Promise<Array<{ path: string; record?: ManagementActionRecord; warning?: string }>> {
   const directory = actionsRoot(root);
   const files = (await fs.readdir(directory).catch(() => [] as string[])).filter((name) => name.endsWith(".json")).sort();
-  return Promise.all(files.map(async (name) => {
+  return mapWithConcurrency(files, DEFAULT_IO_CONCURRENCY, async (name) => {
     const filePath = path.join(directory, name);
     const parsed = ManagementActionRecordSchema.safeParse(await fs.readJson(filePath).catch(() => undefined));
     return parsed.success ? { path: filePath, record: parsed.data } : { path: filePath, warning: `Management action record is corrupt: ${filePath}` };
-  }));
+  });
 }

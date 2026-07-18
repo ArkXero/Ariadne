@@ -21,19 +21,19 @@ importers:
         specifier: ^11.3.2
         version: 11.3.5
       ink:
-        specifier: ^6.8.0
+        specifier: 6.8.0
         version: 6.8.0(@types/react@19.2.17)(react@19.2.7)
       minimatch:
         specifier: ^10.1.1
         version: 10.2.5
       react:
-        specifier: ^19.2.4
+        specifier: ^19.0.0
         version: 19.2.7
       string-width:
-        specifier: ^8.1.0
-        version: 8.2.2
+        specifier: ^7.2.0
+        version: 7.2.0
       strip-ansi:
-        specifier: ^7.1.2
+        specifier: ^7.1.0
         version: 7.2.0
       yaml:
         specifier: ^2.8.2
@@ -49,7 +49,7 @@ importers:
         specifier: ^24.10.1
         version: 24.13.0
       '@types/react':
-        specifier: ^19.2.14
+        specifier: ^19.2.17
         version: 19.2.17
       ink-testing-library:
         specifier: ^4.0.0

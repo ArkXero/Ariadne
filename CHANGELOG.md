@@ -4,6 +4,9 @@
 
 ### Added
 
+- Release-candidate verification through `pnpm release:check`, including clean source snapshots, repeated full gates, production dependency audit, package-contract validation, bounded-resource profiling, and a durable release test matrix.
+- Installed-tarball coverage for npm local/global/exec, pnpm local, direct binary invocation, paths with spaces and Unicode, and safe nested-directory refusal.
+
 - Change review and promotion in `ariadne tui`: selectable attention categories, filtered results, result/manifest detail, bounded per-file diffs, retry comparison, eligibility/preflight/fingerprint review, elevated-risk acknowledgement, apply/discard confirmation, structured conflict/recovery display, safe patch export, and workspace cleanup previews/execution.
 - Shared change/workspace application services, an exclusive management lock, change-artifact v2 stable IDs/object/symlink/mode/copy/rename metadata and hashed text diffs, promotion-record v2 structured failure/rollback data, and management-action v1 export/cleanup history.
 - Opaque diff paging limited to 64 KiB and 400 parsed lines per request, 8 MiB/1,000-hunk capture bounds, binary/sensitive metadata-only handling, final-attempt promotion eligibility, idempotent discard, pure cleanup dry runs, and no-clobber exports with CLI `diff --force` opt-in.
@@ -42,6 +45,9 @@
 
 ### Changed
 
+- History, workspace, review, task, Git-diff, change-capture, and TUI loading now use bounded concurrency; workflow graph construction/planning avoids quadratic scans at 10,000-task scale.
+- Package metadata now matches the shipped Apache-2.0 license and no longer advertises a nonexistent library entrypoint; `prepack` always performs a clean build.
+
 - Existing change-artifact v1 and promotion-record v1 history is normalized on read without rewriting; new captures/events use v2. CLI change, diff, discard, and worktree commands now delegate through the shared review services while preserving machine-output contracts.
 - TUI quit/Ctrl-C during review mutations now requests interruption, keeps duplicate actions locked until safe recovery, and restores the terminal only after the service settles.
 - The TUI is now a keyboard-first local workflow control surface rather than inspection-only. Coral frames/full-viewport layout, bold Cyan `>` focus, rounded zero-gutter panes, ASCII fallback, and `100/60/40` responsiveness remain unchanged.
@@ -51,7 +57,6 @@
 - `ariadne init` and maintained examples emit v4. V3 `parallelSafe` tasks adapt to `workspaceMode` with warnings.
 - Shared mode remains compatible; mutable tasks are exclusive and read-only mutation fails `workspace.read-only`. Worktree mode permits concurrent mutable tasks in distinct checkouts.
 - Worktree retries start fresh from source plus successful dependency results; shared retries retain iterative working-tree behavior.
-- `ariadne init` and all maintained examples now emit configuration v3. Versionless, v1, and v2 inputs adapt to dependency-free workflows with warnings.
 - `ariadne run` now creates one batch plus one independently persisted run record per task attempt; no-selector execution remains all-tasks compatible.
 - Iteration 2 introduced shared-tree `parallelSafe` overlap; v4 adapts that declaration to read-only workspace mode.
 - `pnpm check` is the authoritative clean build, test, smoke, and package gate.
@@ -59,6 +64,9 @@
 - Installed-tarball validation now covers pass, agent failure, verification failure, policy failure, dirty baseline, timeout, interruption, corrupt history, renderer agreement, hostile HTML, and latest-pointer behavior.
 
 ### Fixed
+
+- Restored clean-room installation by reconciling the TUI dependency manifest with `pnpm-lock.yaml`; frozen installs no longer depend on an existing `node_modules` tree.
+- Markdown exports now neutralize hostile raw HTML in addition to escaping table delimiters and newlines.
 
 - Preparation failures now remain `preparation_failed` through batch aggregation, persisted summaries, reports, and exit code 14.
 - Ignored paths remain available as repository evidence without making doctor, worktree isolation, primary-checkout guards, or promotion treat an otherwise clean checkout as dirty; real dirty-path diagnostics now list the affected paths.
@@ -71,6 +79,11 @@
 - Doctor now validates a missing run directory through its nearest existing writable ancestor instead of falsely failing before the first run.
 - Git evidence is scoped and normalized to the canonical invocation root when Ariadne runs from a nested directory inside a larger repository.
 - Timeout cleanup, skipped verification reporting, signal-stage attribution, CSV formula neutralization, unstaged rename attribution, empty forbidden directories, failure sources, untracked deletions, and ignored-directory noise found during release-candidate testing.
+
+### Security
+
+- Package inspection rejects secret, history, editor, coverage, log, screenshot, and tarball artifacts; installed artifacts are scanned for checkout-local absolute paths.
+- Production dependency audit reports are included in the release gate. This remains point-in-time advisory evidence, not security certification.
 
 ### Compatibility
 

@@ -65,6 +65,16 @@ describe("workflow graph and planning", () => {
     expect(plan.concurrencyGroups).toEqual([["a", "b"], ["c"]]);
   });
 
+  it("plans 10,000 independent tasks deterministically without quadratic scans", () => {
+    const values = Array.from({ length: 10_000 }, (_, index) => ({ ...task(`task-${String(index).padStart(5, "0")}`), workspaceMode: "read-only" as const }));
+    const plan = buildWorkflowPlan({ graph: new WorkflowGraph(values.toReversed()), config: { ...config(), execution: { ...config().execution, concurrency: 32 } }, createdAt: new Date("2026-01-01T00:00:00Z") });
+    expect(plan.order).toHaveLength(10_000);
+    expect(plan.order[0]).toBe("task-00000");
+    expect(plan.order.at(-1)).toBe("task-09999");
+    expect(plan.levels).toHaveLength(1);
+    expect(plan.concurrencyGroups.every((group) => group.length <= 32)).toBe(true);
+  });
+
   it.each([
     ["duplicate task ID", [task("A"), task("a")], "TASK_ID_DUPLICATE"],
     ["missing dependency", [task("a", ["missing"])], "TASK_DEPENDENCY_NOT_FOUND"],

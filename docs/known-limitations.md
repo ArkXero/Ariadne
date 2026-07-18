@@ -57,3 +57,10 @@
 - Legacy v1/v2/v3 runs and v1 batches remain readable, but absent isolation/promotion data is labeled unavailable rather than reconstructed.
 - Abandonment detection only identifies a dead same-host PID. It does not prove why execution stopped or reconcile filesystem mutations.
 - Corrupt batches and missing children are reported as warnings; repair is manual or performed through a new resume/rerun batch, never by mutating history.
+
+## Tested scale and performance boundaries
+
+- Release profiling exercises 10, 100, 1,000, and 10,000 history records, 1,000 workspace records, a 1,000-record TUI snapshot, a 10,000-task wide graph, a 4 MiB log, and a 20,000-line text diff. These are regression scales, not latency or memory guarantees for every machine.
+- History, workspace, promotion, management-action, task, Git-diff, review, and TUI reads use bounded concurrency. Large histories still require parsing each record and retain canonical models in memory while a list or snapshot is assembled.
+- Log previews, change-diff pages, live event queues, captured per-file diffs, configured concurrency, and workspace-size traversal have explicit bounds. Complete artifacts may still consume disk proportional to process output and repository changes.
+- Ariadne must be launched from the project root. It does not search parent directories from nested paths, avoiding ambiguous state placement in monorepos and nested Git repositories.

@@ -1,32 +1,65 @@
 # Release Process
 
-1. Confirm the working tree contains only intended changes.
-2. Update `CHANGELOG.md` and package version together.
-3. Install with the locked pnpm version and frozen lockfile.
-4. Run the complete acceptance gate:
+## Prerequisites
 
-   ```sh
-   pnpm check
-   npm pack --dry-run
-   pnpm test:package
-   git diff --check
-   git status --short
-   ```
+- Node.js 20 or newer, pnpm 10.34.1 through Corepack, and Git.
+- A named branch with only reviewed release changes. Generated `dist`, `node_modules`, tarballs, histories, logs, screenshots, credentials, and temporary worktrees must remain ignored and outside the package.
+- An updated Unreleased changelog. Confirm the intended version separately; the release gate never changes it.
+- Green supported CI: Ubuntu on Node 20, 22, and 24 plus macOS and Windows on Node 22.
 
-5. Inspect tarball contents for stale `dist`, source/tests/scripts, credentials, absolute personal paths, and missing shebang/bin metadata.
-6. Inspect generated run v4, batch v2, workspace v1, change-artifact v2, promotion-record v2, and management-action v1 records plus offline HTML for schema drift, link consistency, unsafe paths, hostile-content escaping, and accidental secret/path inclusion.
-7. Verify versionless/v1/v2/v3 config, v1/v2/v3 run, v1 batch, v1 change-artifact, and v1 promotion compatibility readers without rewriting history.
-8. Exercise shared/worktree planning, dependency layering, retries, result browsing, bounded diffs, comparison, safe export and collision, clean apply, target advancement, conflict rollback, idempotent discard, cleanup dry-run/selected/bulk/partial failure, interruption, resume/rerun, non-TTY refusal, and terminal restoration from the installed tarball outside the checkout.
-9. Tag and publish only after the Ubuntu Node 20/22/24 and macOS/Windows Node 22 CI matrix succeeds.
+## Candidate verification
 
-The package build always removes `dist` first. Do not publish from a build path that bypasses `pnpm build` and `pnpm test:package`.
+Run the heavyweight local gate:
 
-## Supported release matrix
+```sh
+pnpm release:check
+```
 
-- Package engine: Node.js 20 or newer.
-- Required CI: Ubuntu on Node 20, 22, and 24; macOS and Windows on Node 22.
-- Development package manager: pnpm 10.34.1 from `packageManager`.
-- Installed package: npm-compatible tarball with production dependencies; pnpm is not required at runtime.
-- Git: optional for shared execution without Git-dependent limits; required for worktree isolation, durable result capture, and promotion.
+It copies only Git-owned files into a disposable path, commits that snapshot locally, performs `pnpm install --frozen-lockfile`, runs `pnpm check` twice, records bounded-resource measurements, runs `pnpm audit --prod`, executes `npm pack --dry-run`, checks whitespace, and fails if repository-owned files change. It does not publish, tag, push, edit the version, or mutate the host project.
 
-Do not describe an untested operating-system/Node combination as CI-validated. Review [supported environments](./supported-environments.md) and [known limitations](./known-limitations.md) with every release.
+Also inspect the candidate directly:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm check
+pnpm check
+pnpm release:check
+pnpm audit --prod
+npm pack --dry-run
+npm pack
+git diff --check
+git status --short
+```
+
+`prepack` performs a clean build. Inspect the JSON pack metadata for name/version, packed and unpacked sizes, file count, and the complete allowlist. The tarball must contain only `dist`, `README.md`, `LICENSE`, and `package.json`; it must not contain source, tests, scripts, local paths, histories, credentials, logs, coverage, screenshots, or another tarball.
+
+## Installed-package and dogfood checklist
+
+Use the real tarball in disposable projects. Verify npm local/global/exec, pnpm local, and direct-binary invocation; version/help; paths containing spaces and Unicode; and safe nested-directory refusal. Exercise:
+
+1. Default and Custom onboarding, doctor, deterministic planning, shared and worktree execution.
+2. Passing, agent, preparation, verification, policy, dirty-baseline, timeout, retry, dependency-block, resume, rerun, and interruption outcomes.
+3. History, task/batch reports, JSON purity, `NO_COLOR`, CSV formula neutralization, Markdown/HTML escaping, corrupt records, missing artifacts, and latest-pointer fallback.
+4. Result review, bounded diff, safe export/collision, clean apply, advanced-target apply, conflict rollback, idempotent discard, cleanup dry-run, cleanup execution, and preserved audit history.
+5. Real POSIX PTY launch/monitor/detach/reopen/cancel/review/resize/teardown where supported. On Windows, require simulated terminal coverage and explicit POSIX-PTY/signal skips.
+
+Use [the release test matrix](./release-test-matrix.md) to classify automated, platform-specific, and manual evidence. Do not call an unexecuted scenario passed.
+
+## Compatibility and safety review
+
+- Validate versionless/v1/v2/v3 configuration adapters and v1-v3 run, v1 batch, v1 change-artifact, and v1 promotion readers without rewriting history.
+- Inspect run v4, batch v2, workspace v1, change-artifact v2, promotion-record v2, and management-action v1 output for schema consistency and repository-relative safe paths.
+- Confirm primary-checkout protection, clean-target enforcement, result/ref ownership, rollback state, unknown-worktree refusal, immutable history, sensitive-path omission, terminal sanitization, and HTML/Markdown/CSV injection protection.
+- Review [supported environments](./supported-environments.md) and [known limitations](./known-limitations.md). Dependency audit output is point-in-time evidence, not security certification.
+
+## Publication and post-publication
+
+Only after every blocker is resolved and the complete CI matrix is green:
+
+1. Choose and apply the release version and changelog heading in one reviewed commit.
+2. Re-run `pnpm release:check` from that commit and inspect `npm pack --dry-run`.
+3. Create the tag and publish the package with the intended npm provenance/access policy.
+4. Install the registry artifact into a new temporary project and repeat version, help, init, doctor, plan, run, report, and non-TTY TUI checks.
+5. Publish release notes that match the changelog and explicitly retain known limitations.
+
+If registry verification fails, stop further promotion, deprecate the affected version with a precise reason where appropriate, document recovery, and prepare a new patch version. Do not rewrite an existing published tarball or tag.

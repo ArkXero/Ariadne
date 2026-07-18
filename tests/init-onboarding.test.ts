@@ -90,6 +90,34 @@ describe("init repository detection and proposals", () => {
     expect(detection.commands.map((command) => command.id)).toEqual(["check", "test", "build", "dev"]);
   });
 
+  it.each([
+    ["JavaScript", { "package.json": "{}\n" }, "Node.js project", "npm"],
+    ["Python", { "pyproject.toml": "[project]\nname = 'fixture'\n" }, "Python project", undefined],
+    ["Rust", { "Cargo.toml": "[package]\nname = 'fixture'\nversion = '0.1.0'\n" }, "Rust project", undefined],
+    ["Go", { "go.mod": "module example.test/fixture\n" }, "Go project", undefined],
+    ["generic", { "README.md": "fixture\n" }, "generic project", undefined]
+  ])("detects %s projects without inventing commands", async (_name, files, projectType, packageManager) => {
+    const cwd = await tempDir("ariadne onboarding ünicode space-");
+    for (const [file, contents] of Object.entries(files)) await writeFile(path.join(cwd, file), contents);
+    const detection = await detectRepository(cwd);
+    expect(detection.projectType).toBe(projectType);
+    expect(detection.packageManager).toBe(packageManager);
+    expect(detection.commands).toEqual([]);
+    expect(detection.git).toEqual({ available: false, hasHead: false, worktreeIsolation: false });
+  });
+
+  it("reports a repository without an initial commit as shared-only", async () => {
+    const cwd = await tempDir();
+    await fs.ensureDir(cwd);
+    await fs.writeFile(path.join(cwd, "README.md"), "uncommitted\n");
+    const { execa } = await import("execa");
+    await execa("git", ["init", "--quiet"], { cwd });
+    const detection = await detectRepository(cwd);
+    expect(detection.git).toEqual({ available: true, hasHead: false, worktreeIsolation: false });
+    const proposal = await buildInitProposal(cwd, detection, defaultInitSettings(detection));
+    expect(proposal.configContents).toContain("isolation: shared");
+  });
+
   it("creates a repository-aware default proposal that is valid and immediately runnable in shared mode", async () => {
     const cwd = await tempDir();
     await writeDetectedProject(cwd);

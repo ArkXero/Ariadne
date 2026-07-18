@@ -11,13 +11,13 @@ Ariadne is an observability and policy tool. It is not an operating-system sandb
 - Git when changed-file/diff policies or worktree isolation are enabled
 
 ```sh
-pnpm install
+pnpm install --frozen-lockfile
 pnpm build
 pnpm link
 ariadne --help
 ```
 
-The repository is pinned to pnpm 10.34.1. With pnpm 11, use `pnpm add --global .` instead of the removed global-link behavior. An installed npm package needs Node and its production dependencies, not pnpm.
+The repository is pinned to pnpm 10.34.1. With pnpm 11, use `pnpm add --global .` instead of the removed global-link behavior. A packed or published npm package needs Node and its production dependencies, not pnpm. Release validation installs the real tarball through npm locally and globally, npm exec, pnpm locally, and the direct package binary.
 
 ## Quick start
 
@@ -33,6 +33,8 @@ ariadne report
 ariadne tui
 ```
 
+Run Ariadne from the project root containing `ariadne.yml`. Nested invocation fails with project-root guidance instead of searching parent directories or writing state in the wrong folder.
+
 In an interactive terminal, `init` offers a repository-aware Default setup and a Custom setup. Default detects the project type, package manager, validation script, installed Codex/Claude Code executable, and Git worktree capability; it imports the strongest detected validation command as a task. Custom additionally configures task dependencies, isolation, concurrency, retries, sensitive-file protections, change limits, and timeouts, then provides YAML and file-diff review before writing.
 
 `ariadne init --yes` accepts detected defaults without prompts. Plain non-interactive `ariadne init` keeps the portable example-agent behavior used by automation. `--custom` requires a TTY.
@@ -46,7 +48,7 @@ agent:
   command:
     kind: exec
     file: codex
-    args: [exec, --sandbox, workspace-write, -]
+    args: [exec, --sandbox, workspace-write, "-"]
   timeout_ms: 600000
 
 tasks:

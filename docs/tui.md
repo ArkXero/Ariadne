@@ -132,4 +132,6 @@ Components never invoke Git, inspect refs, mutate records, copy patches, calcula
 
 `pnpm test:tui-pty` uses the POSIX system PTY facility through Python's standard-library `pty` module when `python3` is available and otherwise reports the simulated-terminal fallback. It exercises selection, planning, launch, live output, dashboard detach/reopen, cancellation confirmation, review navigation, a resize signal, and teardown.
 
+`pnpm release:profile` also loads a 1,000-record history/workspace snapshot through the real TUI application service. This verifies bounded loading and model consistency, not terminal-frame latency on every emulator.
+
 `pnpm dogfood:tui` builds a disposable repository and opens the real TUI. Exercise success, dependency blocking, concurrency, retry success/exhaustion, verification/policy failure, dirty-base warnings, review/compare, one clean apply, one conflict, discard, patch export collision, retained/stale workspace inspection, dry run and cleanup, normal quit, dashboard detach/reopen, confirmed headless detach, cancellation, SIGINT, SIGTERM, and terminal sizes `120x30`, `80x24`, `50x20`, and below `40x12`.

@@ -5,6 +5,7 @@ import { RunRecordSchema } from "../schema/run-record.js";
 import { CURRENT_RUN_SCHEMA_VERSION, type AnyRunRecord, type LegacyRunRecord, type RunRecord } from "../types/index.js";
 import { canonicalizePath, isPathInside } from "./path-containment.js";
 import { AriadneError } from "./errors.js";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 
 export type RunLoadResult =
   | { ok: true; path: string; run: AnyRunRecord; warnings: string[]; legacy: boolean }
@@ -156,7 +157,7 @@ export async function discoverRunFiles(cwd: string): Promise<string[]> {
 export async function loadRunHistory(cwd: string): Promise<{ records: RunLoadResult[]; warnings: string[] }> {
   const projectRoot = await fs.realpath(cwd).catch(() => path.resolve(cwd));
   const files = await discoverRunFiles(cwd);
-  const records = await Promise.all(files.map(loadRunFile));
+  const records = await mapWithConcurrency(files, DEFAULT_IO_CONCURRENCY, loadRunFile);
   const warnings = records.flatMap((record) => record.ok
     ? record.warnings.map((warning) => `${path.relative(projectRoot, record.path)}: ${warning}`)
     : [`${path.relative(projectRoot, record.path)}: ${record.error}`]);

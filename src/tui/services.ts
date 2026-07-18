@@ -4,6 +4,7 @@ import { loadBatchFile, loadBatchHistory, resolveBatchFile } from "../core/batch
 import { loadConfig } from "../core/config.js";
 import { AriadneError } from "../core/errors.js";
 import { canonicalizePath, isPathInside } from "../core/path-containment.js";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "../core/bounded-map.js";
 import { loadPromotions } from "../core/promotion.js";
 import { buildReportModel } from "../core/report.js";
 import { loadRunFile, loadRunHistory, type RunLoadResult } from "../core/run-reader.js";
@@ -173,7 +174,7 @@ async function resultStates(
   warnings: TuiWarning[]
 ): Promise<Map<string, ResultState>> {
   const states = new Map<string, ResultState>();
-  await Promise.all(runs.map(async (loaded) => {
+  await mapWithConcurrency(runs, DEFAULT_IO_CONCURRENCY, async (loaded) => {
     if (!("runId" in loaded.run)) return;
     const run = loaded.run;
     const applicable = run.changeArtifact?.applicable ?? false;
@@ -182,7 +183,7 @@ async function resultStates(
     const revision = run.changeArtifact?.resultRevision;
     const exists = revision ? await resultRefExists(root, revision, run.runId) : false;
     if (!exists) warnings.push(structuredWarning(`Run ${run.runId} is applicable, but its managed result ref is missing or does not match.`, warnings.length, { code: "missing-result-ref", recordId: run.runId }));
-  }));
+  });
   return states;
 }
 
@@ -218,13 +219,13 @@ export class AriadneTuiService implements TuiDataService {
     const workspaces = workspaceItems.flatMap((item) => item.record ? [item.record] : []);
     for (const item of workspaceItems) if (item.warning) warnings.push(structuredWarning(item.warning, warnings.length, { path: path.relative(root, item.metadataPath) }));
     for (const message of [...reviewItems.warnings, ...workspaceDetails.warnings]) warnings.push(structuredWarning(message, warnings.length));
-    await Promise.all(workspaces.map(async (workspace) => {
+    await mapWithConcurrency(workspaces, DEFAULT_IO_CONCURRENCY, async (workspace) => {
       if (["removed", "failed"].includes(workspace.state)) return;
       const workspacePath = path.resolve(root, workspace.path);
       const safe = isPathInside(root, await canonicalizePath(workspacePath));
       if (!safe) warnings.push(structuredWarning(`Workspace ${workspace.workspaceId} resolves outside the project root: ${workspace.path}`, warnings.length, { code: "unsafe-path", recordId: workspace.workspaceId }));
       else if (!(await fs.pathExists(workspacePath))) warnings.push(structuredWarning(`Managed worktree is missing for workspace ${workspace.workspaceId}: ${workspace.path}`, warnings.length, { code: "missing-worktree", recordId: workspace.workspaceId }));
-    }));
+    });
 
     const validRuns = runHistory.records.filter((record): record is Extract<RunLoadResult, { ok: true }> => record.ok);
     const runStates = await resultStates(root, validRuns, promotions, warnings);

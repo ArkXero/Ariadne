@@ -14,6 +14,8 @@ Later Node.js majors may work, but they are not part of the required CI matrix u
 
 The repository is pinned to pnpm 10.34.1. `pnpm check` performs the clean build, tests, linked-command smoke, and installed-tarball smoke. The package smoke installs the packed artifact into a disposable project and invokes the installed binary outside this checkout.
 
+Release validation covers npm local and isolated global installation, npm exec with a tarball, pnpm local installation, and direct execution of the installed `dist/cli.js`. pnpm is a development/install option, not a runtime requirement. `pnpm dlx` is not claimed as a supported local-tarball mode because its resolver behavior varies by pnpm release.
+
 pnpm 11 is compatibility-tested only through the optional `ARIADNE_SMOKE_PNPM_VERSION=11.13.0 pnpm smoke` branch. It uses `pnpm add --global .` because pnpm 11 removed the old global-link command.
 
 ## Git and platforms
@@ -25,3 +27,5 @@ POSIX and Windows use different process-cleanup mechanisms. See [Known limitatio
 Shared concurrency does not change platform support: read-only tasks still share the invocation tree, and only Git-visible mutation is detected. Worktree isolation requires a Git version that supports detached `git worktree add/remove`, local refs, cherry-pick, and binary diff generation.
 
 Worktree behavior is capability-dependent on Windows for symlinks, executable modes, path length, file locking, and cleanup. Process-tree cleanup remains best effort on every platform. Use concurrency 1 when task side effects outside Git are not fully understood.
+
+Project paths containing spaces and Unicode are package-smoke tested. Commands resolve the current directory as the canonical project root; Ariadne intentionally does not search parent directories from a nested invocation. Run from the directory containing `ariadne.yml`.

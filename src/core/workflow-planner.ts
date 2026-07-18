@@ -84,14 +84,16 @@ export function buildWorkflowPlan(options: {
     ? [...new Set(options.selectedIds.map((id) => options.graph.require(id).id))].sort(compareIds)
     : options.graph.tasks.map((task) => task.id);
   const includedTasks = options.graph.closure(selectedRoots);
+  const includedSet = new Set(includedTasks);
   const { order, levels } = options.graph.topological(includedTasks);
+  const levelById = new Map(levels.flatMap((level, index) => level.map((id) => [id, index] as const)));
   const concurrency = options.concurrency ?? options.config.execution.concurrency;
   const failureMode = options.failureMode ?? options.config.execution.failure_mode;
   const isolation = options.isolation ?? options.config.execution.isolation;
   const configFingerprint = semanticConfigFingerprint(options.graph, options.config, failureMode, isolation);
   const selected = new Set(selectedRoots);
   const edges = order.flatMap((id) => options.graph.dependencyIds(id)
-    .filter((dependency) => includedTasks.includes(dependency))
+    .filter((dependency) => includedSet.has(dependency))
     .map((dependency) => ({ from: dependency, to: id })))
     .sort((left, right) => compareIds(left.from, right.from) || compareIds(left.to, right.to));
   const tasks = order.map((id, index) => {
@@ -100,8 +102,8 @@ export function buildWorkflowPlan(options: {
       id,
       name: task.name,
       file: task.file,
-      dependencies: [...options.graph.dependencyIds(id)].filter((dependency) => includedTasks.includes(dependency)),
-      level: levels.findIndex((level) => level.includes(id)),
+      dependencies: [...options.graph.dependencyIds(id)].filter((dependency) => includedSet.has(dependency)),
+      level: levelById.get(id) ?? 0,
       order: index,
       selected: selected.has(id),
       workspaceMode: task.workspaceMode,

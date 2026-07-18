@@ -5,6 +5,7 @@ import { BatchRecordSchema } from "../schema/batch-record.js";
 import { CURRENT_BATCH_SCHEMA_VERSION, type BatchRecord } from "../types/index.js";
 import { AriadneError } from "./errors.js";
 import { canonicalizePath, isPathInside } from "./path-containment.js";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 
 export type BatchLoadResult =
   | { ok: true; path: string; batch: BatchRecord; warnings: string[] }
@@ -78,7 +79,7 @@ export async function discoverBatchFiles(cwd: string): Promise<string[]> {
 
 export async function loadBatchHistory(cwd: string): Promise<{ records: BatchLoadResult[]; warnings: string[] }> {
   const root = await fs.realpath(cwd).catch(() => path.resolve(cwd));
-  const records = await Promise.all((await discoverBatchFiles(root)).map((file) => loadBatchFile(file, root)));
+  const records = await mapWithConcurrency(await discoverBatchFiles(root), DEFAULT_IO_CONCURRENCY, (file) => loadBatchFile(file, root));
   const warnings = records.flatMap((record) => record.ok ? record.warnings.map((warning) => `${path.relative(root, record.path)}: ${warning}`) : [`${path.relative(root, record.path)}: ${record.error}`]);
   return { records, warnings };
 }

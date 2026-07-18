@@ -124,10 +124,12 @@ describe("history resilience and renderers", () => {
   it("escapes CSV commas, quotes, and newlines and Markdown pipes", () => {
     const entry = [{
       startedAt: "2026-01-01T00:00:00.000Z", started: "2026-01-01 00:00", status: "completed", outcome: "passed",
-      taskId: "id", taskName: "Name, \"quoted\" | next\nline", durationMs: 1, duration: "1ms", path: "run.json", runId: "run", score: 100, violations: 0
+      taskId: "id", taskName: "Name, \"quoted\" | next\nline <script>alert(1)</script>", durationMs: 1, duration: "1ms", path: "run.json", runId: "run", score: 100, violations: 0
     }];
-    expect(formatRunCsv(entry)).toContain('"Name, ""quoted"" | next\nline"');
-    expect(formatRunMarkdown(entry)).toContain("\\| next<br>line");
+    expect(formatRunCsv(entry)).toContain('"Name, ""quoted"" | next\nline <script>alert(1)</script>"');
+    const markdown = formatRunMarkdown(entry);
+    expect(markdown).toContain("\\| next<br>line &lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(markdown).not.toContain("<script>");
   });
 
   it("neutralizes spreadsheet formulas in every CSV text field", () => {

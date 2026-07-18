@@ -3,6 +3,7 @@ import path from "node:path";
 import { execa } from "execa";
 import fs from "fs-extra";
 import { atomicWriteFile } from "./atomic.js";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 import { persistedCommand } from "./command-utils.js";
 import { loadConfig } from "./config.js";
 import { AriadneError, asAriadneError, safeValue } from "./errors.js";
@@ -180,7 +181,7 @@ async function readWorkingText(projectRoot: string, filePath: string): Promise<s
 
 async function captureDirtyContents(projectRoot: string, snapshot: RepositorySnapshot): Promise<Map<string, string | null>> {
   const result = new Map<string, string | null>();
-  await Promise.all(snapshot.entries.map(async (entry) => result.set(entry.path, await readWorkingText(projectRoot, entry.path))));
+  await mapWithConcurrency(snapshot.entries, DEFAULT_IO_CONCURRENCY, async (entry) => result.set(entry.path, await readWorkingText(projectRoot, entry.path)));
   return result;
 }
 

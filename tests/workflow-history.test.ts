@@ -93,7 +93,9 @@ describe("workflow history and reports", () => {
     expect(html).not.toContain("#f6f7f4");
     const listed = await listBatches(cwd);
     expect(formatBatchCsv(listed.batches)).toContain("succeeded");
-    expect(formatBatchMarkdown(listed.batches)).toContain("batch_id");
+    const markdown = formatBatchMarkdown([{ ...listed.batches[0]!, selectedRoots: "safe | <script>alert(1)</script>" }]);
+    expect(markdown).toContain("safe \\| &lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(markdown).not.toContain("<script>");
   });
 
   it("persists partial running state before interruption", async () => {

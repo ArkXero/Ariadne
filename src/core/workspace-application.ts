@@ -7,6 +7,7 @@ import { withManagementLock } from "./management-lock.js";
 import { canonicalizePath, isPathInside } from "./path-containment.js";
 import { listWorkspaces, loadWorkspace, removeWorkspace, repositoryIdentity } from "./workspace-manager.js";
 import type { ManagementActionRecord, WorkspaceRecord } from "../types/index.js";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 
 export interface WorkspaceDetail {
   workspaceId: string;
@@ -102,7 +103,7 @@ export async function listManagedWorkspaces(rootInput: string): Promise<{ worksp
   const root = await fs.realpath(rootInput).catch(() => path.resolve(rootInput));
   const [items, actions] = await Promise.all([listWorkspaces(root), loadManagementActions(root)]);
   const records = items.flatMap((item) => item.record ? [item.record] : []);
-  const workspaces = (await Promise.all(records.map((record) => detail(root, record)))).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.workspaceId.localeCompare(right.workspaceId));
+  const workspaces = (await mapWithConcurrency(records, DEFAULT_IO_CONCURRENCY, (record) => detail(root, record))).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.workspaceId.localeCompare(right.workspaceId));
   return {
     workspaces,
     warnings: [...items.flatMap((item) => item.warning ? [item.warning] : []), ...actions.flatMap((item) => item.warning ? [item.warning] : [])],

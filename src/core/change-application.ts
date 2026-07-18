@@ -7,6 +7,7 @@ import { loadBatchHistory } from "./batch-reader.js";
 import { AriadneError } from "./errors.js";
 import { createManagementAction, persistManagementAction } from "./management-actions.js";
 import { withManagementLock } from "./management-lock.js";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 import { canonicalizePath, isPathInside } from "./path-containment.js";
 import {
   applyResult,
@@ -199,7 +200,7 @@ export async function listReviewResults(rootInput: string): Promise<{ results: R
   const currentRepositoryId = await repositoryIdentity(root).then((identity) => identity.repositoryId, () => undefined);
   const promotions = promotionItems.flatMap((item) => item.record ? [item.record] : []);
   const finals = finalAttempts(batches.records);
-  const values = (await Promise.all(history.records.map(async (loaded): Promise<ReviewResult[]> => {
+  const values = (await mapWithConcurrency(history.records, DEFAULT_IO_CONCURRENCY, async (loaded): Promise<ReviewResult[]> => {
     if (!loaded.ok) return [{
       key: loaded.path, runId: path.basename(path.dirname(loaded.path)), manifestPath: path.relative(root, loaded.path).split(path.sep).join("/"),
       taskId: "unreadable", taskName: "Unreadable result record", final: true, executionStatus: "unavailable", outcome: "unknown",
@@ -207,7 +208,7 @@ export async function listReviewResults(rootInput: string): Promise<{ results: R
       binaryFiles: 0, resultState: loaded.code === "unsupported-version" ? "unavailable" : "corrupt", completedAt: "", warning: loaded.error
     }];
     return reviewResult(root, loaded, promotions, finals, currentRepositoryId);
-  }))).flat().sort((left, right) => right.completedAt.localeCompare(left.completedAt) || left.runId.localeCompare(right.runId));
+  })).flat().sort((left, right) => right.completedAt.localeCompare(left.completedAt) || left.runId.localeCompare(right.runId));
   return { results: values, warnings: [...history.warnings, ...promotionItems.flatMap((item) => item.warning ? [item.warning] : []), ...batches.warnings] };
 }
 

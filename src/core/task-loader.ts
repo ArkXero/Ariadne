@@ -3,6 +3,7 @@ import fs from "fs-extra";
 import { isMap, isScalar, parseDocument } from "yaml";
 import { z } from "zod";
 import { AriadneError } from "./errors.js";
+import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
 import type { AriadneTask, LegacyConfigVersion } from "../types/index.js";
 
 export const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -171,7 +172,7 @@ export async function loadTasks(
     });
   }
 
-  const records = await Promise.all(files.map(async (filePath) => {
+  const records = await mapWithConcurrency(files, DEFAULT_IO_CONCURRENCY, async (filePath) => {
     const relativeFile = normalizeRelative(canonicalRoot, filePath);
     const source = await fs.readFile(filePath, "utf8");
     const document = parseDocument(source, { uniqueKeys: false });
@@ -205,7 +206,7 @@ export async function loadTasks(
       source,
       ids: explicitIds.length > 0 ? explicitIds : [fallbackId]
     };
-  }));
+  });
 
   const definitions = new Map<string, { displayId: string; files: string[] }>();
   for (const record of records) {
