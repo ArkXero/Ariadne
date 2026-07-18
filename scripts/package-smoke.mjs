@@ -12,7 +12,8 @@ function assert(condition, message) {
 }
 
 function run(command, args, cwd, expected = 0, environment = {}) {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8", env: { ...process.env, NO_COLOR: "1", ...environment } });
+  const windowsShim = process.platform === "win32" && (["npm", "pnpm", "corepack", "ariadne"].includes(command) || /\.(?:cmd|bat)$/i.test(command));
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", env: { ...process.env, NO_COLOR: "1", ...environment }, shell: windowsShim });
   if (result.status !== expected) {
     throw new Error([`Command failed: ${command} ${args.join(" ")}`, `cwd: ${cwd}`, `expected ${expected}, got ${result.status}`, "stdout:", result.stdout, "stderr:", result.stderr].join("\n"));
   }
