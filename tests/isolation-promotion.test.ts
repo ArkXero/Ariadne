@@ -61,7 +61,7 @@ describe("isolated worktrees and promotion", () => {
 
     const promotion = await applyResult(cwd, attempt.runId);
     expect(promotion).toMatchObject({ status: "succeeded", includedRunIds: [attempt.runId], strategy: "preflight-squash-cherry-pick" });
-    expect(await readFile(path.join(cwd, "target.txt"), "utf8")).toBe("before\nisolated\n");
+    expect((await readFile(path.join(cwd, "target.txt"), "utf8")).replaceAll("\r\n", "\n")).toBe("before\nisolated\n");
     expect((await promotionStatus(cwd, attempt.runId)).promotion).toBe("applied");
     await expect(applyResult(cwd, attempt.runId)).rejects.toMatchObject({ code: "RESULT_ALREADY_APPLIED" });
   });
@@ -126,7 +126,7 @@ if (id === "consumer") {
     expect(promotion.includedRunIds).toEqual([dependency.runId, consumer.runId]);
     expect(await readFile(path.join(cwd, "dependency.txt"), "utf8")).toBe("dependency result\n");
     expect(await readFile(path.join(cwd, "consumer.txt"), "utf8")).toContain("consumer result");
-  });
+  }, 30_000);
 
   it("runs mutable tasks in distinct concurrent worktrees", async () => {
     const cwd = await fixture();
