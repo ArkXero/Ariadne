@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { useApp, useInput, useStdout } from "ink";
+import { useApp, useInput, useStdout, type Key } from "ink";
 import { filterReviewResults, type ReviewResultFilter } from "../core/change-application.js";
 import { AriadneTuiView, activeBatches, artifactFor, attentionCategories, filteredBatches, filteredTasks, filteredWorkspaceDetails, processesFor, recentBatches } from "./components.js";
 import { resolveKey } from "./keymap.js";
@@ -15,6 +15,13 @@ export interface AriadneTuiProps {
   verbose?: boolean;
   dimensions?: { width: number; height: number };
   onDetachActive?: () => void;
+}
+
+function useStableInput(handler: (input: string, key: Key) => void): void {
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+  const stableHandler = useCallback((input: string, key: Key) => handlerRef.current(input, key), []);
+  useInput(stableHandler);
 }
 
 function initialOperationalState(): TuiOperationalState {
@@ -535,7 +542,7 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
     }
   }
 
-  useInput((input, key) => {
+  useStableInput((input, key) => {
     const attached = handle.current ?? service.registry?.current();
     const active = attached && attached.latestSnapshot().state !== "completed";
     if (key.ctrl && input === "c") {

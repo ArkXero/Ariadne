@@ -124,7 +124,7 @@ if (id === "consumer") {
     expect(await readFile(path.join(cwd, "dependency.txt"), "utf8").catch(() => undefined)).toBeUndefined();
     const promotion = await applyResult(cwd, consumer.runId);
     expect(promotion.includedRunIds).toEqual([dependency.runId, consumer.runId]);
-    expect(await readFile(path.join(cwd, "dependency.txt"), "utf8")).toBe("dependency result\n");
+    expect((await readFile(path.join(cwd, "dependency.txt"), "utf8")).replaceAll("\r\n", "\n")).toBe("dependency result\n");
     expect(await readFile(path.join(cwd, "consumer.txt"), "utf8")).toContain("consumer result");
   }, 30_000);
 

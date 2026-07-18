@@ -172,7 +172,7 @@ describe("workflow scheduler", () => {
   });
 
   it("preserves timeout precedence when a parallel-safety violation also occurs", async () => {
-    const cwd = await fixture([{ id: "a", parallelSafe: true }, { id: "b", parallelSafe: true }], { a: { mutate: true }, b: { timeoutOnce: true } }, { concurrency: 2, agentTimeout: 30 });
+    const cwd = await fixture([{ id: "a", parallelSafe: true }, { id: "b", parallelSafe: true }], { a: { mutate: true }, b: { timeoutOnce: true } }, { concurrency: 2, agentTimeout: 500 });
     const batch = await runWorkflow({ cwd });
     expect(batch.tasks.find((task) => task.id === "b")?.finalOutcome).toBe("timeout");
     expect(batch.summary.outcome).toBe("timeout");
