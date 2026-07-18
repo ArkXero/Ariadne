@@ -16,9 +16,11 @@ Ariadne is a local Node.js ESM CLI. Commands remain thin; versioned core modules
 10. `src/core/batch-persistence.ts` and `src/core/persistence.ts` atomically checkpoint versioned batch and child manifests.
 11. `src/core/workflow-application.ts` is the narrow planning/control service shared by `plan`, `run`, `resume`, `rerun`, and the TUI. It exposes inspection and preview operations plus execution handles without changing persisted schemas.
 12. `src/core/workflow-runtime.ts` delivers immutable, process-local runtime events asynchronously through bounded subscriber queues. Process output is redacted before emission; persistence remains authoritative.
-13. `src/core/promotion.ts` owns immutable apply/discard events and transactional preflight. Versioned readers tolerate corrupt/future history; canonical report views drive terminal, JSON, list, CSV, Markdown, offline HTML, and the TUI.
-14. `src/tui/services.ts` owns the one-active-workflow registry and adapts application services/readers into typed views. `src/tui/runtime-state.ts` reduces provisional events, bounds live buffers, and reconciles batch records. Ink components never read files, invoke Git, calculate scores, or interpret persistence. `src/tui/terminal.ts` separately owns alternate-screen entry and idempotent restoration.
-15. `src/theme.ts` owns the shared brand/report palette plus Green, Cyan, and Deep Slate TUI semantic accents and the terminal/CSS adapters used by Init, the TUI, and offline reports.
+13. `src/core/change-application.ts` owns typed result lists, summaries, manifests, bounded diff pages, retry comparison, apply/discard orchestration, and no-clobber patch export. `src/core/workspace-application.ts` owns typed workspace inspection, bounded no-symlink disk usage, pure cleanup previews, and selected/bulk cleanup.
+14. `src/core/promotion.ts` owns immutable promotion v2 events, eligibility, preview fingerprints, transactional preflight, conflict classification, abort verification, and recovery instructions. `src/core/management-lock.ts` serializes apply/discard/export/cleanup; `src/core/management-actions.ts` persists export and cleanup outcomes without mutating run or batch history.
+15. Versioned readers tolerate corrupt/future history and normalize change/promotion v1 data in memory. Canonical report views drive terminal, JSON, list, CSV, Markdown, offline HTML, and the TUI.
+16. `src/tui/services.ts` owns the one-active-workflow registry and adapts workflow/change/workspace application services into typed views. `src/tui/runtime-state.ts` reduces provisional events, bounds live buffers, and reconciles batch records. Ink components never read files, invoke Git, mutate records, copy patches, calculate disk usage, or delete directories. `src/tui/terminal.ts` separately owns alternate-screen entry and idempotent restoration.
+17. `src/theme.ts` owns the shared brand/report palette plus Green, Cyan, and Deep Slate TUI semantic accents and the terminal/CSS adapters used by Init, the TUI, and offline reports.
 
 ## Ownership boundaries
 
@@ -28,6 +30,7 @@ Ariadne is a local Node.js ESM CLI. Commands remain thin; versioned core modules
 - Renderers consume persisted/canonical outcomes; they do not recalculate policy or scheduler status.
 - Presentation surfaces consume semantic roles from `src/theme.ts`; they do not define independent palettes.
 - TUI components consume typed application-service and reducer data only. The registry lives outside React, owns execution handles/cancellation/completion, and permits one active batch. Result-ref existence checks remain behind the Git-owning workspace helper; persisted log reads and provisional live buffers are separately contained, bounded, and sanitized.
+- Review mutations revalidate repository identity, resource ownership, artifact containment, and a preview fingerprint under one exclusive management lock. Dry-run cleanup is read-only and creates no management event.
 - Resume reuses valid successful references and current configuration semantics; rerun always builds a new plan from current input.
 - Invocation/artifact roots are distinct from execution roots. Repository-relative paths and opaque repository identity are persisted. Prompts and environment values are excluded from manifests.
 

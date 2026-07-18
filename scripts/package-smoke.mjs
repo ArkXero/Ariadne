@@ -42,7 +42,7 @@ async function latestBatch(cwd) {
 async function createFixture(name, options = {}) {
   const cwd = path.join(temporaryRoot, `fixture-${name}`);
   await mkdir(path.join(cwd, ".ariadne", "tasks"), { recursive: true });
-  await writeFile(path.join(cwd, ".gitignore"), ".ariadne/runs/\n.ariadne/batches/\n.ariadne/worktrees/\n.ariadne/promotions/\n.ariadne/latest.json\n.env\nnode_modules/\n");
+  await writeFile(path.join(cwd, ".gitignore"), ".ariadne/runs/\n.ariadne/batches/\n.ariadne/worktrees/\n.ariadne/promotions/\n.ariadne/actions/\n.ariadne/exports/\n.ariadne/locks/\n.ariadne/latest.json\n.env\nnode_modules/\n");
   await writeFile(path.join(cwd, "target.txt"), "committed\n");
   await writeFile(path.join(cwd, "agent.mjs"), options.agentSource ?? "process.stdin.resume();\n");
   await writeFile(path.join(cwd, ".ariadne", "tasks", "task.yml"), `${JSON.stringify({
@@ -240,6 +240,7 @@ try {
   run(binary, ["run", "--quiet"], isolated);
   const isolatedRun = (await latestRecord(isolated)).record;
   assert(isolatedRun.workspace?.strategy === "worktree" && isolatedRun.changeArtifact?.applicable === true, "Installed worktree run did not persist an applicable result.");
+  assert(isolatedRun.changeArtifact?.schemaVersion === 2 && isolatedRun.changeArtifact.changes.every((change) => change.changeId && change.diff), "Installed package did not capture change-artifact v2 metadata.");
   assert(await readFile(path.join(isolated, "target.txt"), "utf8") === "committed\n", "Isolated run mutated the primary checkout.");
   const changes = JSON.parse(run(binary, ["changes", isolatedRun.runId, "--json"], isolated).stdout);
   assert(changes.changes.some((change) => change.path === "target.txt") && changes.promotion === "unapplied", "Installed changes view contradicted the result artifact.");
@@ -247,6 +248,8 @@ try {
   assert(unapplied.length === 1 && unapplied[0].run_id === isolatedRun.runId && unapplied[0].promotion === "unapplied", "Installed unapplied history filter was inconsistent.");
   run(binary, ["diff", isolatedRun.runId, "--output", ".ariadne/export/result.patch", "--quiet"], isolated);
   assert((await readFile(path.join(isolated, ".ariadne", "export", "result.patch"), "utf8")).includes("target.txt"), "Installed diff did not copy the complete safe patch.");
+  run(binary, ["diff", isolatedRun.runId, "--output", ".ariadne/export/result.patch", "--quiet"], isolated, 2);
+  run(binary, ["diff", isolatedRun.runId, "--output", ".ariadne/export/result.patch", "--force", "--quiet"], isolated);
   run(binary, ["apply", isolatedRun.runId, "--quiet"], isolated);
   assert(await readFile(path.join(isolated, "target.txt"), "utf8") === "committed\nisolated\n", "Installed clean promotion did not update the primary checkout.");
   assert(JSON.parse(run(binary, ["status", isolatedRun.runId, "--json"], isolated).stdout).promotion === "applied", "Installed status did not report the applied result.");
@@ -264,6 +267,9 @@ try {
   run("git", ["-c", "user.name=Ariadne Package", "-c", "user.email=package@example.test", "commit", "--quiet", "-m", "advance"], conflict);
   run(binary, ["apply", conflictRun.runId, "--quiet"], conflict, 15);
   assert(await readFile(path.join(conflict, "target.txt"), "utf8") === "primary\n", "Promotion conflict changed the primary checkout.");
+  const conflictEvents = await readdir(path.join(conflict, ".ariadne", "promotions"));
+  const conflictEvent = JSON.parse(await readFile(path.join(conflict, ".ariadne", "promotions", conflictEvents.at(-1)), "utf8"));
+  assert(conflictEvent.schemaVersion === 2 && conflictEvent.status === "conflicted" && conflictEvent.failure?.category === "conflict" && conflictEvent.failure.targetModified === false, "Installed conflict did not persist structured rollback state.");
 
   const discarded = await createFixture("discard", {
     isolation: "worktree", retention: "always",
@@ -271,6 +277,7 @@ try {
   });
   run(binary, ["run", "--quiet"], discarded);
   const discardedRun = (await latestRecord(discarded)).record;
+  run(binary, ["discard", discardedRun.runId, "--quiet"], discarded);
   run(binary, ["discard", discardedRun.runId, "--quiet"], discarded);
   assert(JSON.parse(run(binary, ["status", discardedRun.runId, "--json"], discarded).stdout).promotion === "discarded", "Installed discard status was inconsistent.");
   const discardedHistory = JSON.parse(run(binary, ["list", "--discarded", "--json", "--quiet"], discarded).stdout);
@@ -281,7 +288,24 @@ try {
   await writeFile(path.join(discarded, ".ariadne", "worktrees", "corrupt", "workspace.json"), "{broken");
   const worktrees = JSON.parse(run(binary, ["worktree", "list", "--json"], discarded).stdout);
   assert(worktrees.some((item) => item.warning), "Corrupt workspace metadata was not warned and skipped.");
+  const discardedActionCount = await readdir(path.join(discarded, ".ariadne", "actions")).then((items) => items.length, () => 0);
   run(binary, ["worktree", "clean", "--dry-run", "--quiet"], discarded);
+  assert(await readdir(path.join(discarded, ".ariadne", "actions")).then((items) => items.length, () => 0) === discardedActionCount, "Installed cleanup dry run created a management action.");
+
+  const cleanup = await createFixture("cleanup", {
+    isolation: "worktree", retention: "always",
+    agentSource: "import { appendFile } from 'node:fs/promises'; process.stdin.resume(); await appendFile('target.txt', 'cleanup\\n');\n"
+  });
+  run(binary, ["run", "--quiet"], cleanup);
+  const cleanupRun = (await latestRecord(cleanup)).record;
+  run(binary, ["worktree", "clean", "--dry-run", "--quiet"], cleanup);
+  assert(await readdir(path.join(cleanup, ".ariadne", "actions")).then((items) => items.length, () => 0) === 0, "Installed cleanup dry run was not pure.");
+  run(binary, ["worktree", "clean", "--quiet"], cleanup);
+  const cleanupWorkspace = JSON.parse(await readFile(path.join(cleanup, cleanupRun.workspace.metadataPath), "utf8"));
+  assert(cleanupWorkspace.state === "removed", "Installed cleanup did not remove an eligible retained workspace.");
+  const cleanupActions = await readdir(path.join(cleanup, ".ariadne", "actions"));
+  const cleanupAction = JSON.parse(await readFile(path.join(cleanup, ".ariadne", "actions", cleanupActions[0]), "utf8"));
+  assert(cleanupAction.schemaVersion === 1 && cleanupAction.kind === "workspace-cleanup" && cleanupAction.status === "succeeded", "Installed cleanup did not persist management-action v1 history.");
 
   const agentFailure = await createFixture("agent-failure", { agentSource: "process.exit(7);\n" });
   run(binary, ["run", "--quiet"], agentFailure, 10);
@@ -371,7 +395,7 @@ try {
     interruption = "passed";
   }
 
-  console.log(`packed package flow ok: ${metadata.filename} (${metadata.entryCount} files; scenarios=pass,usage,worktree,ignored,apply,conflict,discard,cleanup,agent,preparation,verification,policy,dirty,timeout,retry,dependency,resume,rerun; interruption=${interruption})`);
+  console.log(`packed package flow ok: ${metadata.filename} (${metadata.entryCount} files; scenarios=pass,usage,worktree,ignored,review-export,apply,conflict-rollback,discard-idempotency,cleanup-dry-run,cleanup-history,agent,preparation,verification,policy,dirty,timeout,retry,dependency,resume,rerun,tui-pty; interruption=${interruption})`);
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
 }

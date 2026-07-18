@@ -2,9 +2,10 @@ import React, { createContext, useContext, type ComponentProps } from "react";
 import { Box, Text as InkText } from "ink";
 import stringWidth from "string-width";
 import type { ProcessView } from "../core/report.js";
+import { filterReviewResults } from "../core/change-application.js";
 import { ARIADNE_THEME } from "../theme.js";
 import { bindingsFor, type KeyBinding } from "./keymap.js";
-import { truncateDisplay, wrapHostileLines } from "./sanitize.js";
+import { sanitizeTerminalText, truncateDisplay, wrapHostileLines } from "./sanitize.js";
 import { liveOutputText } from "./runtime-state.js";
 import type {
   AttemptDetail,
@@ -17,7 +18,8 @@ import type {
   TuiSnapshot,
   TuiState,
   TuiWarning,
-  TuiOperationalState
+  TuiOperationalState,
+  WorkspaceReviewFilter
 } from "./types.js";
 
 export type LayoutMode = "wide" | "compact" | "stacked" | "minimum";
@@ -108,12 +110,12 @@ export function formatDuration(milliseconds: number): string {
 
 export function statusLabel(value: string): StatusLabel {
   if (["pass", "passed", "succeeded", "completed", "applied"].includes(value)) return "Passed";
-  if (["fail", "failed", "partially_failed", "preparation_failed", "agent_failed", "verification_failed", "policy_failed", "timeout", "internal_failed", "conflicted", "spawn-failed"].includes(value)) return "Failed";
+  if (["fail", "failed", "partially_failed", "preparation_failed", "agent_failed", "verification_failed", "policy_failed", "timeout", "internal_failed", "conflicted", "application-failed", "corrupt", "spawn-failed"].includes(value)) return "Failed";
   if (["running", "ready", "preparing", "capturing", "applying", "preflighting"].includes(value)) return "Running";
   if (["pending", "retry_wait", "incomplete"].includes(value)) return "Waiting";
   if (["blocked", "skipped"].includes(value)) return "Blocked";
-  if (["warning", "interrupted", "abandoned", "succeeded_with_warnings", "retained", "stale"].includes(value)) return "Warning";
-  if (value === "not-applicable") return "Not applicable";
+  if (["warning", "interrupted", "abandoned", "succeeded_with_warnings", "retained", "stale", "unapplied", "apply-ineligible", "discarded"].includes(value)) return "Warning";
+  if (["not-applicable", "metadata-only", "binary"].includes(value)) return "Not applicable";
   return "Unavailable";
 }
 
@@ -183,7 +185,7 @@ function Pane({ title, subtitle, children, options, focused = false, width, heig
     borderColor={options.color ? focused ? ARIADNE_THEME.focusedBorder : ARIADNE_THEME.border : undefined}
     paddingX={framed ? 1 : 0}
   >
-    <Box height={1} flexShrink={0} overflow="hidden"><Text wrap="truncate-end"><Text color={focused ? ARIADNE_THEME.info : ARIADNE_THEME.foreground} bold>{title}</Text>{subtitle ? <Text color={ARIADNE_THEME.muted}>  {subtitle}</Text> : null}</Text></Box>
+    <Box height={1} flexShrink={0} overflow="hidden"><Text wrap="truncate-end"><Text color={focused ? ARIADNE_THEME.info : ARIADNE_THEME.foreground} bold>{truncateDisplay(title, 240)}</Text>{subtitle ? <Text color={ARIADNE_THEME.muted}>  {truncateDisplay(subtitle, 240)}</Text> : null}</Text></Box>
     <Box flexDirection="column" flexGrow={1} overflow="hidden">{children}</Box>
   </Box>;
 }
@@ -308,20 +310,35 @@ function AttemptSummary({ entry, options, width }: { entry?: AttemptReference; o
   </>;
 }
 
-function Attention({ snapshot, options, width, compact = false }: { snapshot: TuiSnapshot; options: TuiVisualOptions; width: number; compact?: boolean }) {
-  const counts = [
-    { value: snapshot.attention.failedWorkflows, label: "failed workflows", compactLabel: "failed", tone: "error" as const },
-    { value: snapshot.attention.unappliedResults, label: "unapplied results", compactLabel: "unapplied", tone: "warning" as const },
-    { value: snapshot.attention.retainedWorktrees, label: "retained worktrees", compactLabel: "retained", tone: "warning" as const },
-    { value: snapshot.warnings.length, label: "history warnings", compactLabel: "warnings", tone: "warning" as const }
+export function attentionCategories(snapshot: TuiSnapshot) {
+  return [
+    { value: snapshot.attention.unappliedResults, label: "unapplied results", compactLabel: "unapplied", tone: "warning" as const, target: { kind: "results" as const, filter: "unapplied" as const } },
+    { value: snapshot.attention.conflictedResults, label: "application conflicts", compactLabel: "conflicts", tone: "error" as const, target: { kind: "results" as const, filter: "conflicted" as const } },
+    { value: snapshot.attention.applicationFailures, label: "application failures", compactLabel: "apply failed", tone: "error" as const, target: { kind: "results" as const, filter: "application-failed" as const } },
+    { value: snapshot.attention.ineligibleResults, label: "ineligible results", compactLabel: "ineligible", tone: "warning" as const, target: { kind: "results" as const, filter: "ineligible" as const } },
+    { value: snapshot.attention.missingOrCorruptResults, label: "missing or corrupt results", compactLabel: "missing", tone: "error" as const, target: { kind: "results" as const, filter: "missing-artifact" as const } },
+    { value: snapshot.attention.retainedWorktrees, label: "retained worktrees", compactLabel: "retained", tone: "warning" as const, target: { kind: "workspaces" as const, filter: "retained" as const } },
+    { value: snapshot.attention.staleWorktrees, label: "stale worktrees", compactLabel: "stale", tone: "warning" as const, target: { kind: "workspaces" as const, filter: "stale" as const } },
+    { value: snapshot.attention.cleanupFailures, label: "cleanup failures", compactLabel: "cleanup", tone: "error" as const, target: { kind: "workspaces" as const, filter: "cleanup-failure" as const } }
   ];
+}
+
+function Attention({ snapshot, screen, options, width, compact = false }: { snapshot: TuiSnapshot; screen: Extract<Screen, { kind: "dashboard" }>; options: TuiVisualOptions; width: number; compact?: boolean }) {
+  const categories = attentionCategories(snapshot);
   const failedTasks = snapshot.tasks.filter((task) => statusLabel(task.state) === "Failed").slice(0, 2);
-  if (compact) return <>
-    <Text>{counts.map((item, index) => <React.Fragment key={item.label}>{index > 0 ? options.unicode ? " · " : " | " : ""}<Text color={item.value > 0 ? toneColor(item.tone) : ARIADNE_THEME.muted} bold={item.value > 0}>{item.value} {item.compactLabel}</Text></React.Fragment>)}</Text>
-    {failedTasks[0] ? <Text color={ARIADNE_THEME.error}>! {truncateDisplay(`${failedTasks[0].taskId}: ${failedTasks[0].name}`, Math.max(1, width - 3))}</Text> : null}
-  </>;
+  if (compact) {
+    const selected = Math.min(screen.selection, categories.length - 1);
+    const window = visibleWindow(categories.length, selected, 2);
+    return <>
+      {categories.slice(window.start, window.end).map((item, offset) => <Selection key={item.label} selected={screen.focus === "attention" && window.start + offset === selected}>
+        <Text color={item.value > 0 ? toneColor(item.tone) : ARIADNE_THEME.muted} bold={item.value > 0}>{item.value > 0 ? "!" : options.unicode ? "—" : "-"} {item.value} {truncateDisplay(item.label, Math.max(1, width - 8))}</Text>
+      </Selection>)}
+    </>;
+  }
   return <>
-    {counts.map((item) => <Text key={item.label} color={item.value > 0 ? toneColor(item.tone) : ARIADNE_THEME.muted} bold={item.value > 0}>{item.value > 0 ? options.unicode ? "!" : "!" : options.unicode ? "—" : "-"} {item.value} {item.label}</Text>)}
+    {categories.map((item, index) => <Selection key={item.label} selected={screen.focus === "attention" && screen.selection === index}>
+      <Text color={item.value > 0 ? toneColor(item.tone) : ARIADNE_THEME.muted} bold={item.value > 0}>{item.value > 0 ? "!" : options.unicode ? "—" : "-"} {item.value} {item.label}</Text>
+    </Selection>)}
     {failedTasks.map((task) => <Text key={task.key} color={ARIADNE_THEME.error}>  {truncateDisplay(`${task.taskId}: ${task.name}`, Math.max(1, width - 4))}</Text>)}
   </>;
 }
@@ -343,7 +360,7 @@ function Dashboard({ snapshot, screen, operational, options }: { snapshot: TuiSn
     title="Workflows"
     subtitle={meta([`${attachedBatchId ? 1 : 0} attached`, `${unattached} unattached`, `${recent.length} recent`, windowLabel(window, entries.length)], options)}
     options={childOptions(options, leftWidth, bodyHeight)}
-    focused
+    focused={screen.focus !== "attention"}
     width={leftWidth}
     height={bodyHeight}
   >
@@ -359,7 +376,7 @@ function Dashboard({ snapshot, screen, operational, options }: { snapshot: TuiSn
   if (layout !== "wide") return <Box flexDirection="column" width={options.width} height={bodyHeight} overflow="hidden">
     <Box flexGrow={1} overflow="hidden">{list}</Box>
     <Pane title="Needs attention" options={childOptions(options, options.width, 6)} width={options.width} height={Math.min(6, Math.max(4, bodyHeight - 5))}>
-      <Attention snapshot={snapshot} options={options} width={options.width} compact />
+      <Attention snapshot={snapshot} screen={screen} options={options} width={options.width} compact />
     </Pane>
   </Box>;
   return <Box width={options.width} height={bodyHeight} gap={0} overflow="hidden">
@@ -368,8 +385,8 @@ function Dashboard({ snapshot, screen, operational, options }: { snapshot: TuiSn
       <Pane title="Selected workflow" options={childOptions(options, rightWidth, 9)} width={rightWidth} height={Math.min(9, bodyHeight - 5)}>
         <WorkflowSummary entry={entries[selected]} options={options} width={rightWidth} attached={entries[selected]?.key === attachedBatchId} />
       </Pane>
-      <Pane title="Needs attention" options={childOptions(options, rightWidth, bodyHeight - 10)} width={rightWidth} flexGrow={1}>
-        <Attention snapshot={snapshot} options={options} width={rightWidth} />
+      <Pane title="Needs attention" options={childOptions(options, rightWidth, bodyHeight - 10)} focused={screen.focus === "attention"} width={rightWidth} flexGrow={1}>
+        <Attention snapshot={snapshot} screen={screen} options={options} width={rightWidth} />
       </Pane>
     </Box>
   </Box>;
@@ -919,6 +936,220 @@ function Footer({ screen, options }: { screen: Screen; options: TuiVisualOptions
   </Box>;
 }
 
+function formatBytes(value: number | undefined): string {
+  if (value === undefined) return "unavailable";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function ReviewMessage({ operational, options, title }: { operational: TuiOperationalState; options: TuiVisualOptions; title: string }) {
+  return <Pane title={title} options={options} focused width={options.width} height={options.height}>
+    <Text color={operational.reviewError ? ARIADNE_THEME.error : ARIADNE_THEME.info}>{sanitizeTerminalText(operational.reviewError ?? operational.actionProgress ?? "Loading...")}</Text>
+  </Pane>;
+}
+
+function ResultsView({ snapshot, screen, options }: { snapshot: TuiSnapshot; screen: Extract<Screen, { kind: "results" }>; options: TuiVisualOptions }) {
+  const items = filterReviewResults(snapshot.results, screen.filter);
+  const selected = Math.min(screen.selection, Math.max(0, items.length - 1));
+  const wide = options.width >= 100;
+  const window = visibleWindow(items.length, selected, Math.max(1, Math.floor(contentCapacity(options.height, true) / (wide ? 2 : 1))));
+  return <Pane title="Results" subtitle={`Filter: ${humanize(screen.filter)} ${windowLabel(window, items.length)}`} options={options} focused width={options.width} height={options.height}>
+    {items.length === 0 ? <Empty text="No results match this filter." /> : items.slice(window.start, window.end).map((item, offset) => {
+      const width = Math.max(12, options.width - 5);
+      const identity = `${item.taskId}  ${item.batchId ?? "standalone"}  ${item.runId}`;
+      const dimensions = `${item.executionStatus}/${item.verificationStatus}/${item.policyStatus}  score ${item.score ?? "n/a"}`;
+      const counts = `${item.changedFiles} files  +${item.additions}/-${item.deletions}`;
+      const state = `${item.resultState}  workspace ${item.workspaceState ?? "n/a"}  ${item.completedAt || "unknown time"}`;
+      const label = wide ? `${truncateDisplay(`${identity}  ${dimensions}`, width)}\n  ${truncateDisplay(`${counts}  ${state}`, Math.max(1, width - 2))}` : `${identity}  ${counts}  ${item.resultState}`;
+      return <Selection key={item.key} selected={window.start + offset === selected}><Text>{wide ? label : truncateDisplay(label, width)}</Text></Selection>;
+    })}
+  </Pane>;
+}
+
+function ResultReviewView({ operational, options }: { operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const summary = operational.resultSummary;
+  if (!summary) return <ReviewMessage operational={operational} options={options} title="Result summary" />;
+  const result = summary.result;
+  const latestPromotion = summary.promotions.at(-1);
+  return <Pane title="Result summary" subtitle={result.final ? "Final attempt" : "Earlier attempt · read-only"} options={options} focused width={options.width} height={options.height}>
+    <StatusLine status={result.resultState} outcome={result.outcome} options={options} />
+    <Metadata label="Task" value={`${result.taskId}: ${result.taskName}`} width={options.width - 4} />
+    <Metadata label="Run" value={result.runId} width={options.width - 4} />
+    <Metadata label="Workflow" value={result.batchId ? `${result.batchId} · attempt ${result.attempt}` : "standalone"} width={options.width - 4} />
+    <Metadata label="Execution" value={`${result.executionStatus} · verification ${result.verificationStatus} · policy ${result.policyStatus} · score ${result.score ?? "n/a"}`} width={options.width - 4} />
+    <Metadata label="Revisions" value={`${summary.sourceRevision ?? "unknown"} → ${summary.resultRevision ?? "none"}`} width={options.width - 4} />
+    <Metadata label="Changes" value={`${result.changedFiles} files · +${result.additions}/-${result.deletions} · ${result.binaryFiles} binary · ${summary.omittedSensitive.length} redacted`} width={options.width - 4} />
+    <Metadata label="Promotion" value={`${result.resultState} · ${summary.promotions.length} events`} width={options.width - 4} />
+    {latestPromotion ? <Metadata label="Latest event" value={`${latestPromotion.kind} · ${latestPromotion.status} · ${latestPromotion.updatedAt}`} width={options.width - 4} /> : null}
+    {latestPromotion ? <Metadata label="Event target" value={`${latestPromotion.targetBranch ?? "none"} · ${latestPromotion.preApplyRevision ?? "unknown"} → ${latestPromotion.postApplyRevision ?? "unchanged"}`} width={options.width - 4} /> : null}
+    <Metadata label="Workspace" value={summary.workspaceId ? `${summary.workspaceId} · ${result.workspaceState ?? "unknown"}` : "not applicable"} width={options.width - 4} />
+    {latestPromotion?.conflicts?.slice(0, 3).map((conflict) => <Text key={conflict.path} color={ARIADNE_THEME.error}>! {truncateDisplay(`${conflict.path}: ${conflict.category} conflict`, options.width - 5)}</Text>)}
+    {latestPromotion?.failure ? <Text color={latestPromotion.failure.manualRecoveryRequired ? ARIADNE_THEME.error : ARIADNE_THEME.warning}>! {truncateDisplay(`${latestPromotion.failure.code}: ${latestPromotion.failure.message}`, options.width - 5)}</Text> : null}
+    {latestPromotion?.failure?.manualRecoveryRequired ? latestPromotion.failure.recoveryCommands.map((command) => <Text key={command}>{truncateDisplay(command, options.width - 4)}</Text>) : null}
+    {summary.ineligibleReason ? <Text color={ARIADNE_THEME.warning}>! {truncateDisplay(summary.ineligibleReason, options.width - 5)}</Text> : null}
+    {summary.policyFailures.slice(0, 3).map((value) => <Text key={value} color={ARIADNE_THEME.error}>! {truncateDisplay(value, options.width - 5)}</Text>)}
+  </Pane>;
+}
+
+function ChangeManifestView({ screen, operational, options }: { screen: Extract<Screen, { kind: "changes" }>; operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const changes = operational.resultSummary?.changes;
+  if (!changes) return <ReviewMessage operational={operational} options={options} title="Changed files" />;
+  const selected = Math.min(screen.selection, Math.max(0, changes.length - 1));
+  const window = visibleWindow(changes.length, selected, contentCapacity(options.height, true));
+  return <Pane title="Changed files" subtitle={windowLabel(window, changes.length)} options={options} focused width={options.width} height={options.height}>
+    {changes.length === 0 ? <Empty text="No safe captured changes." /> : changes.slice(window.start, window.end).map((change, offset) => {
+      const special = [change.binary ? "binary" : "", change.kind === "symlink" ? "symlink" : "", change.changeType === "mode-changed" ? "mode" : ""].filter(Boolean).join(",");
+      const value = `${change.changeType.padEnd(15)} ${change.originalPath ? `${change.originalPath} → ` : ""}${change.path}  ${change.binary ? "—" : `+${change.additions ?? 0}/-${change.deletions ?? 0}`} ${special}`;
+      return <Selection key={change.changeId ?? change.path} selected={window.start + offset === selected}><Text>{truncateDisplay(value, options.width - 5)}</Text></Selection>;
+    })}
+    {operational.resultSummary?.omittedSensitive.map((item) => <Text key={item.path} color={ARIADNE_THEME.warning}>REDACTED  {truncateDisplay(item.path, options.width - 16)}  {item.reason}</Text>)}
+  </Pane>;
+}
+
+function DiffReviewView({ screen, operational, options }: { screen: Extract<Screen, { kind: "diff" }>; operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const page = operational.diffPage;
+  if (!page) return <ReviewMessage operational={operational} options={options} title="Diff" />;
+  const capacity = Math.max(1, options.height - 5);
+  const start = Math.min(screen.scroll, Math.max(0, page.lines.length - capacity));
+  return <Pane title={`Diff · ${truncateDisplay(page.change.path, Math.max(8, options.width - 20))}`} subtitle={`${page.status} · ${formatBytes(page.totalBytes)}${page.truncated ? " · bounded" : ""}`} options={options} focused width={options.width} height={options.height}>
+    {page.message ? <Text color={ARIADNE_THEME.warning}>{truncateDisplay(page.message, options.width - 4)}</Text> : null}
+    {page.lines.length === 0 ? <Empty text="No renderable text diff. Inspect metadata or export the safe patch." /> : page.lines.slice(start, start + capacity).map((line, index) => {
+      const numbers = `${line.oldLine ?? ""}`.padStart(5) + " " + `${line.newLine ?? ""}`.padStart(5);
+      const color = line.kind === "added" ? ARIADNE_THEME.success : line.kind === "removed" ? ARIADNE_THEME.error : line.kind === "hunk" ? ARIADNE_THEME.info : line.kind === "metadata" || line.kind === "header" ? ARIADNE_THEME.muted : undefined;
+      return <Text key={`${start + index}:${line.text}`} color={color}>{numbers} {truncateDisplay(line.text, Math.max(1, options.width - 17))}</Text>;
+    })}
+  </Pane>;
+}
+
+function ComparisonView({ operational, options }: { operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const value = operational.comparison;
+  if (!value) return <ReviewMessage operational={operational} options={options} title="Attempt comparison" />;
+  return <Pane title="Attempt comparison" subtitle={`${value.left.runId} ↔ ${value.right.runId}`} options={options} focused width={options.width} height={options.height}>
+    <Metadata label="Left" value={`attempt ${value.left.attempt ?? 1} · ${value.left.outcome} · score ${value.left.score ?? "n/a"} · ${value.left.changedFiles} files`} width={options.width - 4} />
+    <Metadata label="Right" value={`attempt ${value.right.attempt ?? 1} · ${value.right.outcome} · score ${value.right.score ?? "n/a"} · ${value.right.changedFiles} files`} width={options.width - 4} />
+    <Text color={ARIADNE_THEME.success} bold>Added in right</Text>
+    {value.addedPaths.slice(0, 8).map((item) => <Text key={`a:${item}`}>+ {truncateDisplay(item, options.width - 5)}</Text>)}
+    <Text color={ARIADNE_THEME.error} bold>Removed in right</Text>
+    {value.removedPaths.slice(0, 8).map((item) => <Text key={`r:${item}`}>- {truncateDisplay(item, options.width - 5)}</Text>)}
+    <Text color={ARIADNE_THEME.muted}>{value.sharedPaths.length} shared paths</Text>
+  </Pane>;
+}
+
+function EligibilityView({ operational, options }: { operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const value = operational.applyEligibility;
+  if (!value) return <ReviewMessage operational={operational} options={options} title="Apply eligibility" />;
+  return <Pane title="Apply eligibility" subtitle={value.eligible ? "Eligible to preflight" : "Ineligible"} options={options} focused width={options.width} height={options.height}>
+    {value.checks.map((check) => <Text key={check.id} color={check.status === "fail" ? ARIADNE_THEME.error : check.status === "warning" ? ARIADNE_THEME.warning : ARIADNE_THEME.success}>{check.status === "pass" ? options.unicode ? "✓" : "+" : check.status === "warning" ? "!" : options.unicode ? "✗" : "x"} {truncateDisplay(`${check.label}: ${check.detail}`, options.width - 6)}</Text>)}
+  </Pane>;
+}
+
+function ApplyPreviewView({ operational, options }: { operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const value = operational.applyPreview;
+  if (!value) return <ReviewMessage operational={operational} options={options} title="Apply preview" />;
+  return <Pane title="Apply preview" subtitle={`Preflight: ${value.preflight}`} options={options} focused width={options.width} height={options.height}>
+    <Metadata label="Target" value={`${value.targetRepository} · ${value.targetBranch ?? "detached"}`} width={options.width - 4} />
+    <Metadata label="Revision" value={value.targetRevision ?? "unknown"} width={options.width - 4} />
+    <Metadata label="Strategy" value={value.strategy} width={options.width - 4} />
+    <Metadata label="Closure" value={value.closureRunIds.join(", ") || "none"} width={options.width - 4} />
+    <Metadata label="Changes" value={`${value.changedFiles} files · +${value.additions}/-${value.deletions}`} width={options.width - 4} />
+    {value.conflicts.map((item) => <Text key={item.path} color={ARIADNE_THEME.error}>! {truncateDisplay(`${item.path}: ${item.category} conflict`, options.width - 5)}</Text>)}
+    {value.highRiskReasons.map((item) => <Text key={item} color={ARIADNE_THEME.warning}>! {truncateDisplay(item, options.width - 5)}</Text>)}
+    <Text color={ARIADNE_THEME.muted}>Preflight is an estimate; execution revalidates the target.</Text>
+  </Pane>;
+}
+
+function ReviewConfirmation({ kind, operational, options }: { kind: "apply" | "discard" | "cleanup"; operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const risky = kind === "apply" && (operational.applyPreview?.highRiskReasons.length ?? 0) > 0;
+  return <Pane title={`${humanize(kind)} confirmation`} subtitle="Explicit confirmation required" options={options} focused width={options.width} height={options.height}>
+    <Text color={ARIADNE_THEME.warning} bold>{kind === "apply" ? "This will create a commit in the target repository." : kind === "discard" ? "This will remove the managed result ref and eligible retained workspace." : "This will remove proven Ariadne-managed workspaces."}</Text>
+    {risky ? <Text color={operational.riskAcknowledged ? ARIADNE_THEME.success : ARIADNE_THEME.warning}>{operational.riskAcknowledged ? "[x]" : "[ ]"} Space acknowledges elevated risk</Text> : null}
+    {operational.actionProgress ? <Text color={ARIADNE_THEME.info}>{truncateDisplay(operational.actionProgress, options.width - 4)}</Text> : null}
+    {operational.reviewError ? <Text color={ARIADNE_THEME.error}>{truncateDisplay(operational.reviewError, options.width - 4)}</Text> : null}
+    <Text><Text color={ARIADNE_THEME.info} bold>Enter</Text> confirm  <Text color={ARIADNE_THEME.info} bold>Esc</Text> cancel</Text>
+  </Pane>;
+}
+
+function DiscardPreviewView({ operational, options }: { operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const value = operational.discardPreview;
+  if (!value) return <ReviewMessage operational={operational} options={options} title="Discard preview" />;
+  return <Pane title="Discard preview" subtitle={value.eligible ? "Ready" : "Blocked"} options={options} focused width={options.width} height={options.height}>
+    <Metadata label="Run" value={value.runId} width={options.width - 4} />
+    <Metadata label="Result ref" value={value.resultRef ?? "none"} width={options.width - 4} />
+    <Metadata label="Workspace" value={value.workspaceId ? `${value.workspaceId} · ${value.workspaceState}` : "none"} width={options.width - 4} />
+    <Text bold>Preserves</Text>{value.preserves.map((item) => <Text key={item}>+ {truncateDisplay(item, options.width - 6)}</Text>)}
+    {value.blockers.map((item) => <Text key={item} color={ARIADNE_THEME.error}>! {truncateDisplay(item, options.width - 6)}</Text>)}
+  </Pane>;
+}
+
+function ExportPreviewView({ operational, options }: { operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const value = operational.patchExportPreview;
+  if (!value) return <ReviewMessage operational={operational} options={options} title="Patch export" />;
+  return <Pane title="Patch export" subtitle="No-clobber" options={options} focused width={options.width} height={options.height}>
+    <Metadata label="Destination" value={value.destination} width={options.width - 4} />
+    <Metadata label="Size" value={formatBytes(value.bytes)} width={options.width - 4} />
+    <Metadata label="Included" value={`${value.includedFiles.length} files`} width={options.width - 4} />
+    <Metadata label="Redacted" value={`${value.excludedSensitiveFiles.length} files`} width={options.width - 4} />
+    {value.limitations.map((item) => <Text key={item} color={ARIADNE_THEME.warning}>! {truncateDisplay(item, options.width - 5)}</Text>)}
+  </Pane>;
+}
+
+export function filteredWorkspaceDetails(snapshot: TuiSnapshot, filter: WorkspaceReviewFilter = "all") {
+  if (filter === "retained") return snapshot.workspaceDetails.filter((workspace) => workspace.state === "retained");
+  if (filter === "stale") return snapshot.workspaceDetails.filter((workspace) => workspace.state === "stale" || workspace.state === "missing");
+  if (filter === "cleanup-failure") return snapshot.workspaceDetails.filter((workspace) => Boolean(workspace.cleanupError));
+  return snapshot.workspaceDetails;
+}
+
+function WorkspacesView({ snapshot, screen, options }: { snapshot: TuiSnapshot; screen: Extract<Screen, { kind: "workspaces" }>; options: TuiVisualOptions }) {
+  const values = filteredWorkspaceDetails(snapshot, screen.filter);
+  const selected = Math.min(screen.selection, Math.max(0, values.length - 1));
+  const window = visibleWindow(values.length, selected, contentCapacity(options.height, true));
+  return <Pane title="Managed workspaces" subtitle={`${humanize(screen.filter ?? "all")} · ${windowLabel(window, values.length)}`} options={options} focused width={options.width} height={options.height}>
+    {values.length === 0 ? <Empty text="No managed workspaces." /> : values.slice(window.start, window.end).map((item, offset) => <Selection key={item.workspaceId} selected={window.start + offset === selected}>
+      <Text>{truncateDisplay(`${item.state.padEnd(10)} ${item.taskId.padEnd(18)} ${formatBytes(item.sizeBytes).padEnd(10)} ${item.workspaceId} ${item.cleanupEligible ? "cleanable" : "blocked"}`, options.width - 5)}</Text>
+    </Selection>)}
+  </Pane>;
+}
+
+function WorkspaceReviewView({ operational, options }: { operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const value = operational.workspaceDetail;
+  if (!value) return <ReviewMessage operational={operational} options={options} title="Workspace" />;
+  return <Pane title="Workspace" subtitle={value.cleanupEligible ? "Cleanup eligible" : "Protected"} options={options} focused width={options.width} height={options.height}>
+    <Metadata label="ID" value={value.workspaceId} width={options.width - 4} />
+    <Metadata label="Task/run" value={`${value.taskId} · ${value.runId} · attempt ${value.attempt}`} width={options.width - 4} />
+    <Metadata label="State" value={`${value.state} · physical ${value.physicalState}`} width={options.width - 4} />
+    <Metadata label="Path" value={value.path} width={options.width - 4} />
+    <Metadata label="Revision" value={`${value.sourceRevision} → ${value.preparedRevision ?? "unprepared"}`} width={options.width - 4} />
+    <Metadata label="Retention" value={`${value.retention}${value.retentionReason ? ` · ${value.retentionReason}` : ""}`} width={options.width - 4} />
+    <Metadata label="Size" value={`${formatBytes(value.sizeBytes)}${value.sizeTruncated ? " lower bound" : ""}`} width={options.width - 4} />
+    {value.cleanupBlockers.map((item) => <Text key={item} color={ARIADNE_THEME.warning}>! {truncateDisplay(item, options.width - 5)}</Text>)}
+  </Pane>;
+}
+
+function CleanupPreviewView({ operational, options }: { operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const value = operational.cleanupPreview;
+  if (!value) return <ReviewMessage operational={operational} options={options} title="Cleanup preview" />;
+  return <Pane title="Cleanup preview" subtitle={value.eligible ? "Dry run · eligible" : "Dry run · blocked"} options={options} focused width={options.width} height={options.height}>
+    <Metadata label="Workspace" value={value.workspaceId} width={options.width - 4} />
+    <Metadata label="Recovery" value={formatBytes(value.estimatedBytes)} width={options.width - 4} />
+    <Text bold>Will remove</Text>{value.removes.map((item) => <Text key={item}>- {truncateDisplay(item, options.width - 6)}</Text>)}
+    <Text bold>Will preserve</Text>{value.preserves.map((item) => <Text key={item}>+ {truncateDisplay(item, options.width - 6)}</Text>)}
+    {value.blockers.map((item) => <Text key={item} color={ARIADNE_THEME.error}>! {truncateDisplay(item, options.width - 6)}</Text>)}
+  </Pane>;
+}
+
+function ActionResultView({ operational, options }: { operational: TuiOperationalState; options: TuiVisualOptions }) {
+  const status = operational.promotionResult?.status ?? operational.cleanupResult?.action.status ?? (operational.reviewError ? "failed" : "succeeded");
+  return <Pane title="Action result" subtitle={status} options={options} focused width={options.width} height={options.height}>
+    <StatusLine status={status} options={options} />
+    <Text>{truncateDisplay(operational.actionMessage ?? operational.reviewError ?? "Action completed.", options.width - 4)}</Text>
+    {operational.promotionResult?.conflicts?.map((item) => <Text key={item.path} color={ARIADNE_THEME.error}>! {truncateDisplay(`${item.path}: ${item.category}`, options.width - 5)}</Text>)}
+    {operational.promotionResult?.failure?.manualRecoveryRequired ? <><Text color={ARIADNE_THEME.error} bold>Manual recovery required</Text>{operational.promotionResult.failure.recoveryCommands.map((item) => <Text key={item}>{truncateDisplay(item, options.width - 4)}</Text>)}</> : null}
+    {operational.cleanupResult ? <Text>{operational.cleanupResult.cleaned.length} cleaned · {operational.cleanupResult.skipped.length} skipped · {operational.cleanupResult.failed.length} failed</Text> : null}
+  </Pane>;
+}
+
 function ScreenBody({ state, operational, options }: { state: TuiState; operational?: TuiOperationalState; options: TuiVisualOptions }) {
   const snapshot = state.snapshot;
   const screen = state.screen;
@@ -934,10 +1165,26 @@ function ScreenBody({ state, operational, options }: { state: TuiState; operatio
     if (screen.kind === "cancel-progress") return <CancellationProgressView operational={operational} options={options} />;
     if (screen.kind === "resume-preview") return <PlanReviewView screen={screen} operational={operational} options={options} title="Resume workflow" />;
     if (screen.kind === "rerun-preview") return <PlanReviewView screen={screen} operational={operational} options={options} title={`Rerun ${humanize(operational.rerunPreview?.mode ?? "workflow")}`} />;
+    if (screen.kind === "result") return <ResultReviewView operational={operational} options={options} />;
+    if (screen.kind === "changes") return <ChangeManifestView screen={screen} operational={operational} options={options} />;
+    if (screen.kind === "diff") return <DiffReviewView screen={screen} operational={operational} options={options} />;
+    if (screen.kind === "compare") return <ComparisonView operational={operational} options={options} />;
+    if (screen.kind === "apply-eligibility") return <EligibilityView operational={operational} options={options} />;
+    if (screen.kind === "apply-preview") return <ApplyPreviewView operational={operational} options={options} />;
+    if (screen.kind === "apply-confirm") return <ReviewConfirmation kind="apply" operational={operational} options={options} />;
+    if (screen.kind === "discard-preview") return <DiscardPreviewView operational={operational} options={options} />;
+    if (screen.kind === "discard-confirm") return <ReviewConfirmation kind="discard" operational={operational} options={options} />;
+    if (screen.kind === "export-preview") return <ExportPreviewView operational={operational} options={options} />;
+    if (screen.kind === "workspace") return <WorkspaceReviewView operational={operational} options={options} />;
+    if (screen.kind === "cleanup-preview") return <CleanupPreviewView operational={operational} options={options} />;
+    if (screen.kind === "cleanup-confirm") return <ReviewConfirmation kind="cleanup" operational={operational} options={options} />;
+    if (screen.kind === "action-result") return <ActionResultView operational={operational} options={options} />;
   }
   if (state.snapshotRequest.error && !snapshot) return <Pane title="Could not load history" options={options} focused width={options.width} height={options.height}><Text color={ARIADNE_THEME.error}>{state.snapshotRequest.error}</Text></Pane>;
   if (!snapshot) return <Pane title="History" options={options} focused width={options.width} height={options.height}><Text color={ARIADNE_THEME.info}>Loading...</Text></Pane>;
   if (screen.kind === "dashboard") return <Dashboard snapshot={snapshot} screen={screen} operational={operational} options={options} />;
+  if (screen.kind === "results") return <ResultsView snapshot={snapshot} screen={screen} options={options} />;
+  if (screen.kind === "workspaces") return <WorkspacesView snapshot={snapshot} screen={screen} options={options} />;
   if (screen.kind === "history") return <History snapshot={snapshot} screen={screen} options={options} />;
   if (screen.kind === "workflow") return <Workflow snapshot={snapshot} screen={screen} options={options} />;
   if (screen.kind === "task") {

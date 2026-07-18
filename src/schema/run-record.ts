@@ -82,9 +82,20 @@ export const RunRecordSchema = z.object({
     preparation: z.array(TaskRunResultSchema.shape.agent.unwrap())
   }).strict().optional(),
   changeArtifact: z.object({
-    schemaVersion: z.literal(1), state: z.enum(["captured", "empty", "incomplete"]), sourceRevision: z.string(), preparedRevision: z.string(),
+    schemaVersion: z.union([z.literal(1), z.literal(2)]), state: z.enum(["captured", "empty", "incomplete"]), sourceRevision: z.string(), preparedRevision: z.string(),
     resultRevision: z.string().optional(), resultRef: z.string().optional(), patchArtifact: z.string().optional(), previewArtifact: z.string().optional(), manifestArtifact: z.string(),
-    changes: z.array(z.object({ path: z.string(), originalPath: z.string().optional(), changeType: z.enum(["added", "modified", "deleted", "renamed", "copied", "mode-changed", "symlink-changed", "untracked", "ignored"]), additions: z.number().int().nonnegative().nullable(), deletions: z.number().int().nonnegative().nullable(), binary: z.boolean(), mode: z.string().optional(), kind: z.enum(["file", "symlink", "other"]).optional() }).strict()),
+    changes: z.array(z.object({
+      changeId: z.string().optional(), path: z.string(), originalPath: z.string().optional(),
+      changeType: z.enum(["added", "modified", "deleted", "renamed", "copied", "mode-changed", "symlink-changed", "untracked", "ignored"]),
+      additions: z.number().int().nonnegative().nullable(), deletions: z.number().int().nonnegative().nullable(), binary: z.boolean(),
+      mode: z.string().optional(), kind: z.enum(["file", "symlink", "other"]).optional(), similarity: z.number().min(0).max(100).optional(),
+      old: z.object({ path: z.string(), mode: z.string().optional(), kind: z.enum(["file", "symlink", "other"]).optional(), size: z.number().int().nonnegative().optional(), objectId: z.string().optional(), symlinkTarget: z.string().optional() }).strict().optional(),
+      new: z.object({ path: z.string(), mode: z.string().optional(), kind: z.enum(["file", "symlink", "other"]).optional(), size: z.number().int().nonnegative().optional(), objectId: z.string().optional(), symlinkTarget: z.string().optional() }).strict().optional(),
+      diff: z.object({
+        status: z.enum(["text", "binary", "metadata-only", "unavailable"]), artifact: z.string().optional(), bytes: z.number().int().nonnegative(),
+        lines: z.number().int().nonnegative(), hunks: z.number().int().nonnegative(), sha256: z.string().optional(), reason: z.string().optional()
+      }).strict().optional()
+    }).strict()),
     omittedSensitive: z.array(z.object({ path: z.string(), reason: z.string(), rule: z.string().optional(), kind: z.enum(["file", "symlink", "other"]).optional(), size: z.number().int().nonnegative().optional(), sha256: z.string().optional() }).strict()),
     applicable: z.boolean(), ineligibleReason: z.string().optional()
   }).strict().optional()

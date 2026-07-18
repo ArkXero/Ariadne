@@ -225,9 +225,10 @@ program.command("changes <runIdOrPath>").description("Show the canonical safe-ch
 
 program.command("diff <runIdOrPath>").description("Print a bounded text-safe change preview; optionally copy the complete safe binary patch.")
   .option("-o, --output <path>", "Project-relative destination for the complete safe binary patch.")
-  .action(async (runIdOrPath: string, local: { output?: string }, command: Command) => {
+  .option("--force", "Replace an existing patch export path.")
+  .action(async (runIdOrPath: string, local: { output?: string; force?: boolean }, command: Command) => {
     const options = command.optsWithGlobals<GlobalOptions>();
-    await diffCommand(process.cwd(), runIdOrPath, local.output, options.json);
+    await diffCommand(process.cwd(), runIdOrPath, local.output, options.json, local.force);
   });
 
 program.command("status <runIdOrPath>").description("Show applicability, promotion state, and promotion history for a result.")

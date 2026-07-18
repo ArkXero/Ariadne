@@ -8,16 +8,58 @@ import { loadBatchFile, resolveBatchFile } from "./batch-reader.js";
 import { captureRepositorySnapshot } from "./git.js";
 import { loadRunFile, loadRunHistory, resolveRunFile } from "./run-reader.js";
 import { AriadneError } from "./errors.js";
+import { withManagementLock } from "./management-lock.js";
 import { loadWorkspace, removeWorkspace, repositoryIdentity, resultRefExists } from "./workspace-manager.js";
 import { PromotionRecordSchema } from "../schema/promotion-record.js";
 import {
   CURRENT_PROMOTION_SCHEMA_VERSION,
   type BatchRecord,
+  type PromotionConflict,
   type PromotionRecord,
   type RunRecord
 } from "../types/index.js";
 
 const GIT_TIMEOUT_MS = 30_000;
+
+export interface ApplyEligibilityCheck {
+  id: string;
+  label: string;
+  status: "pass" | "warning" | "fail";
+  detail: string;
+}
+
+export interface ApplyEligibility {
+  runId: string;
+  eligible: boolean;
+  checks: ApplyEligibilityCheck[];
+  targetRepository: string;
+  targetBranch?: string;
+  targetRevision?: string;
+  closureRunIds: string[];
+  fingerprint?: string;
+}
+
+export interface ApplyPreview extends ApplyEligibility {
+  preflight: "clean" | "conflict" | "unavailable";
+  conflicts: PromotionConflict[];
+  strategy: "preflight-squash-cherry-pick";
+  changedFiles: number;
+  additions: number;
+  deletions: number;
+  highRiskReasons: string[];
+}
+
+export interface DiscardPreview {
+  runId: string;
+  eligible: boolean;
+  alreadyDiscarded: boolean;
+  resultRef?: string;
+  workspaceId?: string;
+  workspaceState?: string;
+  removesWorkspace: boolean;
+  preserves: string[];
+  blockers: string[];
+}
 
 async function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   try {
@@ -63,7 +105,29 @@ export async function loadPromotions(root: string): Promise<Array<{ path: string
   return Promise.all(files.map(async (name) => {
     const filePath = path.join(directory, name);
     const parsed = PromotionRecordSchema.safeParse(await fs.readJson(filePath).catch(() => undefined));
-    return parsed.success ? { path: filePath, record: parsed.data } : { path: filePath, warning: `Promotion record is corrupt: ${filePath}` };
+    if (!parsed.success) return { path: filePath, warning: `Promotion record is corrupt: ${filePath}` };
+    const value = parsed.data;
+    if (value.schemaVersion === CURRENT_PROMOTION_SCHEMA_VERSION) return { path: filePath, record: value };
+    const failed = ["conflicted", "failed", "interrupted"].includes(value.status);
+    const legacyMessage = value.error ?? value.lifecycle.at(-1)?.detail ?? `Legacy promotion ended with status ${value.status}.`;
+    const record: PromotionRecord = {
+      ...value,
+      schemaVersion: CURRENT_PROMOTION_SCHEMA_VERSION,
+      ...(value.conflictPaths.length > 0 ? { conflicts: value.conflictPaths.map((conflictPath) => ({ path: conflictPath, category: "unknown" as const })) } : {}),
+      ...(failed ? {
+        failure: {
+          category: value.status === "conflicted" ? "conflict" as const : value.status === "interrupted" ? "interrupted" as const : "unknown" as const,
+          code: "LEGACY_PROMOTION_FAILURE",
+          message: legacyMessage,
+          targetModified: false,
+          rollbackAttempted: false,
+          manualRecoveryRequired: false,
+          recoveryCommands: []
+        }
+      } : {}),
+      ...(value.kind === "discard" && value.status === "discarded" ? { discard: { resultRefRemoved: true, historyPreserved: true as const } } : {})
+    };
+    return { path: filePath, record };
   }));
 }
 
@@ -142,7 +206,178 @@ function requireApplicable(run: RunRecord): void {
   }
 }
 
-export async function applyResult(rootInput: string, idOrPath: string): Promise<PromotionRecord> {
+function promotionFingerprint(value: {
+  runId: string;
+  repositoryId: string;
+  branch: string;
+  targetRevision: string;
+  closure: RunRecord[];
+}): string {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    runId: value.runId,
+    repositoryId: value.repositoryId,
+    branch: value.branch,
+    targetRevision: value.targetRevision,
+    closure: value.closure.map((run) => ({ runId: run.runId, revision: run.changeArtifact?.resultRevision }))
+  })).digest("hex");
+}
+
+function conflictsFor(run: RunRecord, paths: string[]): PromotionConflict[] {
+  const changes = new Map(run.changeArtifact?.changes.map((change) => [change.path, change]) ?? []);
+  return paths.map((filePath) => {
+    const change = changes.get(filePath);
+    return {
+      path: filePath,
+      category: change?.binary ? "binary" : change?.changeType === "renamed" ? "rename" : "content"
+    };
+  });
+}
+
+async function eligibilityData(rootInput: string, idOrPath: string): Promise<{
+  root: string;
+  run: RunRecord;
+  identity: Awaited<ReturnType<typeof repositoryIdentity>>;
+  branch?: string;
+  closure: RunRecord[];
+  checks: ApplyEligibilityCheck[];
+}> {
+  const root = await fs.realpath(rootInput).catch(() => path.resolve(rootInput));
+  const checks: ApplyEligibilityCheck[] = [];
+  const run = await loadManagedRun(root, idOrPath);
+  const artifact = run.changeArtifact;
+  if (run.workflow) {
+    const batch = await loadBatchFile(await resolveBatchFile(root, run.workflow.batchId), root);
+    const task = batch.ok ? batch.batch.tasks.find((item) => item.id.toLowerCase() === run.workflow!.taskId.toLowerCase()) : undefined;
+    const final = task?.attempts.find((attempt) => attempt.attempt === task.finalAttempt) ?? task?.attempts.at(-1);
+    const promotable = final?.runId === run.runId;
+    checks.push({
+      id: "final-attempt",
+      label: "Final workflow attempt",
+      status: promotable ? "pass" : "fail",
+      detail: promotable ? "This is the workflow task's final attempt." : "Earlier retries are reviewable and exportable but cannot be applied."
+    });
+  } else {
+    checks.push({ id: "standalone", label: "Standalone result", status: "pass", detail: "Standalone runs are promotion candidates." });
+  }
+  if (artifact?.manifestArtifact && await fs.pathExists(path.resolve(root, artifact.manifestArtifact))) checks.push({ id: "artifact", label: "Result artifact available", status: "pass", detail: artifact.manifestArtifact });
+  else checks.push({ id: "artifact", label: "Result artifact available", status: "fail", detail: "The durable change manifest is missing." });
+  if (artifact?.applicable && artifact.resultRevision && run.workspace?.repositoryId) checks.push({ id: "applicable", label: "Result marked applicable", status: "pass", detail: artifact.resultRevision });
+  else checks.push({ id: "applicable", label: "Result marked applicable", status: "fail", detail: artifact?.ineligibleReason ?? "No applicable isolated result exists." });
+
+  const identity = await repositoryIdentity(root);
+  const repositoryMatches = identity.repositoryId === run.workspace?.repositoryId;
+  checks.push({ id: "repository", label: "Repository identity matches", status: repositoryMatches ? "pass" : "fail", detail: repositoryMatches ? identity.repositoryId : "Result belongs to a different repository." });
+  const state = await currentPromotionState(root, run.runId);
+  checks.push({ id: "state", label: "Result has not been applied or discarded", status: state.applied || state.discarded ? "fail" : "pass", detail: state.applied ? `Already applied by ${state.applied.promotionId}.` : state.discarded ? `Discarded by ${state.discarded.promotionId}.` : "Unapplied." });
+
+  const repository = await captureRepositorySnapshot(root, [".ariadne"]);
+  const dirtyPaths = repository.entries.filter((entry) => entry.changeType !== "ignored").map((entry) => entry.path);
+  checks.push({ id: "clean", label: "Target working tree clean", status: repository.available && !repository.dirty ? "pass" : "fail", detail: repository.available ? dirtyPaths.join(", ") || "Clean." : repository.unavailableReason ?? "Git state unavailable." });
+  const branchResult = await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const branch = branchResult.exitCode === 0 ? branchResult.stdout.trim() : undefined;
+  checks.push({ id: "branch", label: "Target is on a named branch", status: branch ? "pass" : "fail", detail: branch ?? "Detached HEAD." });
+
+  const planned = await promotionClosure(root, run);
+  const closure: RunRecord[] = [];
+  for (const child of planned) {
+    const childState = await currentPromotionState(root, child.runId);
+    if (childState.discarded) {
+      checks.push({ id: `dependency:${child.runId}`, label: `Dependency ${child.runId}`, status: "fail", detail: "Required result was discarded." });
+      continue;
+    }
+    if (childState.applied) {
+      const contained = Boolean(branch && childState.applied.targetBranch === branch && childState.applied.postApplyRevision)
+        && (await git(root, ["merge-base", "--is-ancestor", childState.applied.postApplyRevision!, "HEAD"])).exitCode === 0;
+      checks.push({ id: `dependency:${child.runId}`, label: `Dependency ${child.runId}`, status: contained ? "pass" : "fail", detail: contained ? "Already present on this target." : "Applied elsewhere but not present on this branch." });
+      continue;
+    }
+    closure.push(child);
+    const revision = child.changeArtifact?.resultRevision;
+    const exists = Boolean(revision) && await resultRefExists(root, revision!, child.runId);
+    checks.push({ id: `result:${child.runId}`, label: `Managed result ${child.runId}`, status: child.changeArtifact?.applicable && exists ? "pass" : "fail", detail: exists ? revision! : "Result ref is missing, mismatched, or ineligible." });
+  }
+  if (identity.sourceRevision !== artifact?.sourceRevision) checks.push({ id: "advanced", label: "Target branch advancement", status: "warning", detail: `Target advanced from ${artifact?.sourceRevision ?? "unknown"} to ${identity.sourceRevision}; preflight is required.` });
+  return { root, run, identity, branch, closure, checks };
+}
+
+export async function inspectApplyEligibility(rootInput: string, idOrPath: string): Promise<ApplyEligibility> {
+  const data = await eligibilityData(rootInput, idOrPath);
+  const eligible = data.checks.every((check) => check.status !== "fail");
+  return {
+    runId: data.run.runId, eligible, checks: data.checks, targetRepository: data.root,
+    ...(data.branch ? { targetBranch: data.branch } : {}), targetRevision: data.identity.sourceRevision,
+    closureRunIds: data.closure.map((run) => run.runId),
+    ...(eligible && data.branch ? { fingerprint: promotionFingerprint({ runId: data.run.runId, repositoryId: data.identity.repositoryId, branch: data.branch, targetRevision: data.identity.sourceRevision, closure: data.closure }) } : {})
+  };
+}
+
+export async function previewApplyResult(rootInput: string, idOrPath: string): Promise<ApplyPreview> {
+  const data = await eligibilityData(rootInput, idOrPath);
+  const eligible = data.checks.every((check) => check.status !== "fail");
+  const changes = data.closure.flatMap((run) => run.changeArtifact?.changes ?? []);
+  const previousConflict = (await loadPromotions(data.root)).some((item) => item.record?.kind === "apply" && item.record.status === "conflicted" && item.record.includedRunIds.includes(data.run.runId));
+  const highRiskReasons = [
+    ...(changes.some((change) => change.binary) ? ["Includes binary changes."] : []),
+    ...(changes.some((change) => change.kind === "symlink" || change.changeType === "symlink-changed") ? ["Includes symlink changes."] : []),
+    ...(changes.some((change) => change.changeType === "mode-changed") ? ["Includes file-mode changes."] : []),
+    ...(data.checks.some((check) => check.id === "advanced") ? ["Target branch advanced after the result source revision."] : []),
+    ...(changes.length > 100 || changes.reduce((sum, change) => sum + (change.additions ?? 0) + (change.deletions ?? 0), 0) > 10_000 ? ["Result is unusually large."] : []),
+    ...(previousConflict ? ["A previous apply attempt conflicted."] : [])
+  ];
+  let preflight: ApplyPreview["preflight"] = eligible ? "clean" : "unavailable";
+  let conflicts: PromotionConflict[] = [];
+  if (eligible) {
+    const previewRoot = path.join(data.root, ".ariadne", "worktrees", `promotion-preview-${crypto.randomUUID()}`);
+    const checkout = path.join(previewRoot, "checkout");
+    try {
+      await fs.ensureDir(previewRoot);
+      const added = await git(data.root, ["worktree", "add", "--detach", checkout, data.identity.sourceRevision]);
+      if (added.exitCode !== 0) preflight = "unavailable";
+      else {
+        for (const child of data.closure) {
+          const picked = await git(checkout, ["cherry-pick", child.changeArtifact!.resultRevision!]);
+          if (picked.exitCode !== 0) {
+            const paths = (await git(checkout, ["diff", "--name-only", "--diff-filter=U"])).stdout.split(/\r?\n/).filter(Boolean).sort();
+            conflicts = conflictsFor(child, paths);
+            await git(checkout, ["cherry-pick", "--abort"]);
+            preflight = "conflict";
+            break;
+          }
+        }
+      }
+    } finally {
+      await git(data.root, ["worktree", "remove", "--force", checkout]);
+      await fs.remove(previewRoot).catch(() => undefined);
+    }
+  }
+  return {
+    runId: data.run.runId, eligible, checks: data.checks, targetRepository: data.root,
+    ...(data.branch ? { targetBranch: data.branch } : {}), targetRevision: data.identity.sourceRevision,
+    closureRunIds: data.closure.map((run) => run.runId),
+    ...(eligible && data.branch ? { fingerprint: promotionFingerprint({ runId: data.run.runId, repositoryId: data.identity.repositoryId, branch: data.branch, targetRevision: data.identity.sourceRevision, closure: data.closure }) } : {}),
+    preflight, conflicts, strategy: "preflight-squash-cherry-pick", changedFiles: changes.length,
+    additions: changes.reduce((sum, change) => sum + (change.additions ?? 0), 0),
+    deletions: changes.reduce((sum, change) => sum + (change.deletions ?? 0), 0), highRiskReasons
+  };
+}
+
+export async function previewDiscardResult(rootInput: string, idOrPath: string): Promise<DiscardPreview> {
+  const root = await fs.realpath(rootInput).catch(() => path.resolve(rootInput));
+  const run = await loadManagedRun(root, idOrPath);
+  const state = await currentPromotionState(root, run.runId);
+  const blockers: string[] = [];
+  if (state.applied) blockers.push("Applied results cannot be discarded.");
+  if (!run.changeArtifact?.resultRef) blockers.push("No managed result ref exists.");
+  if (run.workspace?.repositoryId !== (await repositoryIdentity(root)).repositoryId) blockers.push("Result belongs to a different repository.");
+  return {
+    runId: run.runId, eligible: blockers.length === 0, alreadyDiscarded: Boolean(state.discarded), resultRef: run.changeArtifact?.resultRef,
+    workspaceId: run.workspace?.workspaceId, workspaceState: run.workspace?.state,
+    removesWorkspace: run.workspace?.state === "retained",
+    preserves: ["run and batch manifests", "stdout and stderr artifacts", "reports", "safe patch artifacts", "promotion history"], blockers
+  };
+}
+
+async function applyResultUnlocked(rootInput: string, idOrPath: string, expectedFingerprint?: string): Promise<PromotionRecord> {
   const root = await fs.realpath(rootInput).catch(() => path.resolve(rootInput));
   await recoverOwnedCherryPick(root);
   const run = await loadManagedRun(root, idOrPath);
@@ -181,6 +416,17 @@ export async function applyResult(rootInput: string, idOrPath: string): Promise<
       throw new AriadneError({ category: "promotion_conflict", code: "RESULT_REF_MISSING", stage: "validated", message: `Managed result ref for run ${child.runId} is missing or does not match its recorded revision.`, correction: "Rerun the task; historical manifests are not rewritten." });
     }
   }
+  const fingerprint = promotionFingerprint({
+    runId: run.runId, repositoryId: identity.repositoryId, branch: branch.stdout.trim(),
+    targetRevision: identity.sourceRevision, closure
+  });
+  if (expectedFingerprint && expectedFingerprint !== fingerprint) {
+    throw new AriadneError({
+      category: "promotion_conflict", code: "PROMOTION_PREVIEW_STALE", stage: "validated",
+      message: "The apply preview is stale because the target or result closure changed.",
+      correction: "Refresh eligibility and preview the result again before applying."
+    });
+  }
   const record = initial("apply", run, identity.repositoryId);
   record.includedRunIds = closure.map((item) => item.runId);
   record.targetBranch = branch.stdout.trim();
@@ -199,6 +445,11 @@ export async function applyResult(rootInput: string, idOrPath: string): Promise<
       const picked = await git(checkout, ["cherry-pick", child.changeArtifact!.resultRevision!]);
       if (picked.exitCode !== 0) {
         record.conflictPaths = (await git(checkout, ["diff", "--name-only", "--diff-filter=U"])).stdout.split(/\r?\n/).filter(Boolean).sort();
+        record.conflicts = conflictsFor(child, record.conflictPaths);
+        record.failure = {
+          category: "conflict", code: "PROMOTION_PREFLIGHT_CONFLICT", message: "The result conflicts in the temporary preflight worktree.",
+          targetModified: false, rollbackAttempted: false, manualRecoveryRequired: false, recoveryCommands: []
+        };
         await git(checkout, ["cherry-pick", "--abort"]);
         await transition(root, record, "conflicted", `Preflight conflict${record.conflictPaths.length ? `: ${record.conflictPaths.join(", ")}` : "."}`);
         return record;
@@ -217,8 +468,19 @@ export async function applyResult(rootInput: string, idOrPath: string): Promise<
     const applied = await git(root, ["cherry-pick", record.promotionCommit]);
     if (applied.exitCode !== 0) {
       record.conflictPaths = (await git(root, ["diff", "--name-only", "--diff-filter=U"])).stdout.split(/\r?\n/).filter(Boolean).sort();
-      await git(root, ["cherry-pick", "--abort"]);
-      await transition(root, record, "conflicted", "Unexpected primary-checkout conflict was aborted automatically.");
+      record.conflicts = conflictsFor(run, record.conflictPaths);
+      const aborted = await git(root, ["cherry-pick", "--abort"]);
+      const head = (await git(root, ["rev-parse", "HEAD"])).stdout.trim();
+      const operation = await git(root, ["rev-parse", "--git-path", "CHERRY_PICK_HEAD"]);
+      const cherryPickActive = operation.exitCode === 0 && await fs.pathExists(path.resolve(root, operation.stdout.trim()));
+      const restored = aborted.exitCode === 0 && head === record.preApplyRevision && !cherryPickActive;
+      record.failure = {
+        category: "conflict", code: restored ? "PROMOTION_CONFLICT_ABORTED" : "PROMOTION_CONFLICT_RECOVERY_REQUIRED",
+        message: restored ? "Unexpected primary-checkout conflict was aborted automatically." : "The conflicting cherry-pick could not be verified as restored.",
+        targetModified: !restored, rollbackAttempted: true, rollbackSucceeded: restored,
+        manualRecoveryRequired: !restored, recoveryCommands: restored ? [] : ["git cherry-pick --abort", "git status --short --branch"]
+      };
+      await transition(root, record, "conflicted", record.failure.message);
       return record;
     }
     record.postApplyRevision = (await git(root, ["rev-parse", "HEAD"])).stdout.trim();
@@ -226,6 +488,11 @@ export async function applyResult(rootInput: string, idOrPath: string): Promise<
     return record;
   } catch (error) {
     record.error = error instanceof Error ? error.message : String(error);
+    record.failure ??= {
+      category: error instanceof AriadneError && error.code === "PROMOTION_PREVIEW_STALE" ? "stale-preview" : error instanceof AriadneError ? "ineligible" : "git",
+      code: error instanceof AriadneError ? error.code : "PROMOTION_OPERATION_FAILED", message: record.error,
+      targetModified: false, rollbackAttempted: false, manualRecoveryRequired: false, recoveryCommands: []
+    };
     await transition(root, record, error instanceof AriadneError && error.category === "promotion_conflict" ? "conflicted" : "failed", record.error);
     if (error instanceof AriadneError) throw error;
     return record;
@@ -237,7 +504,12 @@ export async function applyResult(rootInput: string, idOrPath: string): Promise<
   }
 }
 
-export async function discardResult(rootInput: string, idOrPath: string): Promise<PromotionRecord> {
+export async function applyResult(rootInput: string, idOrPath: string, expectedFingerprint?: string): Promise<PromotionRecord> {
+  const root = await fs.realpath(rootInput).catch(() => path.resolve(rootInput));
+  return withManagementLock(root, `apply ${idOrPath}`, () => applyResultUnlocked(root, idOrPath, expectedFingerprint));
+}
+
+async function discardResultUnlocked(rootInput: string, idOrPath: string): Promise<PromotionRecord> {
   const root = await fs.realpath(rootInput).catch(() => path.resolve(rootInput));
   const run = await loadManagedRun(root, idOrPath);
   if (!run.changeArtifact?.resultRef || !run.workspace?.repositoryId) throw new AriadneError({ category: "promotion_conflict", code: "RESULT_NOT_DISCARDABLE", stage: "validated", message: `Run ${run.runId} has no managed result ref.` });
@@ -245,7 +517,7 @@ export async function discardResult(rootInput: string, idOrPath: string): Promis
   if (identity.repositoryId !== run.workspace.repositoryId) throw new AriadneError({ category: "promotion_conflict", code: "PROMOTION_REPOSITORY_MISMATCH", stage: "validated", message: "Result belongs to a different repository." });
   const state = await currentPromotionState(root, run.runId);
   if (state.applied) throw new AriadneError({ category: "promotion_conflict", code: "APPLIED_RESULT_CANNOT_BE_DISCARDED", stage: "validated", message: `Run ${run.runId} was already applied.` });
-  if (state.discarded) throw new AriadneError({ category: "promotion_conflict", code: "RESULT_ALREADY_DISCARDED", stage: "validated", message: `Run ${run.runId} was already discarded.` });
+  if (state.discarded) return state.discarded;
   if (!run.changeArtifact.resultRevision || !await resultRefExists(root, run.changeArtifact.resultRevision, run.runId)) {
     throw new AriadneError({ category: "promotion_conflict", code: "RESULT_REF_MISSING", stage: "validated", message: `Managed result ref for run ${run.runId} is missing or does not match its recorded revision.` });
   }
@@ -262,10 +534,19 @@ export async function discardResult(rootInput: string, idOrPath: string): Promis
   }
   if (run.workspace.state === "retained" && run.workspace.workspaceId) {
     const workspace = await loadWorkspace(root, run.workspace.workspaceId).catch(() => undefined);
-    if (workspace) await removeWorkspace(root, workspace, "Discard removed the retained managed worktree.");
+    if (workspace) {
+      const cleaned = await removeWorkspace(root, workspace, "Discard removed the retained managed worktree.");
+      record.discard = { resultRefRemoved: true, workspaceId: workspace.workspaceId, workspaceState: cleaned.state, historyPreserved: true };
+    }
   }
+  record.discard ??= { resultRefRemoved: true, historyPreserved: true };
   await transition(root, record, "discarded", "Managed result ref discarded; historical artifacts remain immutable.");
   return record;
+}
+
+export async function discardResult(rootInput: string, idOrPath: string): Promise<PromotionRecord> {
+  const root = await fs.realpath(rootInput).catch(() => path.resolve(rootInput));
+  return withManagementLock(root, `discard ${idOrPath}`, () => discardResultUnlocked(root, idOrPath));
 }
 
 export async function promotionStatus(root: string, idOrPath: string): Promise<{ runId: string; applicable: boolean; changeState?: string; promotion: "unapplied" | "applied" | "discarded"; events: PromotionRecord[] }> {

@@ -23,3 +23,19 @@ Confirmed `q` detach restores the screen but continues the workflow headlessly i
 ## Terminal state looks damaged
 
 Run `reset` or `stty sane`, then reproduce with `pnpm test:tui-pty` and `pnpm dogfood:tui`. Report the terminal emulator, OS, `TERM`, locale, dimensions, whether the path was normal quit/detach/SIGINT/SIGTERM/render failure, and whether `\e[?1049l` restoration appeared in captured output.
+
+## Apply says the preview is stale
+
+The target branch, HEAD, repository identity, or result closure changed after preview. Ariadne did not apply against the new state. Return to the result, run `a`, repeat eligibility and preflight, review the new fingerprint inputs, and confirm again. Do not treat an earlier clean preflight as current.
+
+## Apply reports a conflict
+
+Preflight conflicts occur only in an Ariadne temporary worktree and leave the primary checkout unchanged. An unexpected primary-checkout conflict triggers `git cherry-pick --abort` plus HEAD/operation-state verification. If the result screen says manual recovery is required, run only the sanitized commands shown there after inspecting `git status --short --branch`; Ariadne deliberately has no merge editor or automatic resolution.
+
+## A diff is metadata-only or truncated
+
+Binary, sensitive, oversized (over 8 MiB), or over-1,000-hunk file diffs are metadata-only. Other pages read at most 64 KiB and return at most 400 lines. Use `e` for a unique no-clobber safe patch export, or `ariadne diff <run> --output <path>`; the CLI requires `--force` to replace an existing destination.
+
+## Workspace cleanup skips a resource
+
+Inspect workspace detail for repository-ID, `ws-` name, exact managed path, owner, state, directory/registration, symlink, or corruption blockers. Dry runs never change the resource. Do not manually broaden the cleanup path; unknown or unprovable directories are intentionally skipped. Missing managed directories can be cleaned idempotently, while partial failures remain available for retry.

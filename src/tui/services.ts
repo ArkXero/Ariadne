@@ -20,6 +20,27 @@ import {
 } from "../core/workflow-application.js";
 import type { BatchAttemptReference, PromotionRecord, RunRecord, TaskOutcome } from "../types/index.js";
 import { readLogPreview } from "./log-preview.js";
+import {
+  applyReviewedResult,
+  compareAttemptResults,
+  discardReviewedResult,
+  exportPatch,
+  inspectApplyEligibility,
+  listReviewResults,
+  loadFileDiff,
+  loadResultSummary,
+  previewApplyResult,
+  previewDiscardResult,
+  previewPatchExport
+} from "../core/change-application.js";
+import {
+  cleanEligibleWorkspaces,
+  cleanWorkspace,
+  listManagedWorkspaces,
+  loadWorkspaceDetail,
+  previewEligibleWorkspaceCleanup,
+  previewWorkspaceCleanup
+} from "../core/workspace-application.js";
 import type {
   AttemptDetail,
   AttemptReference,
@@ -181,12 +202,14 @@ export class AriadneTuiService implements TuiDataService {
   async loadSnapshot(): Promise<TuiSnapshot> {
     const root = await fs.realpath(this.root).catch(() => this.root);
     const warnings: TuiWarning[] = [];
-    const [configuration, batchHistory, runHistory, promotionItems, workspaceItems] = await Promise.all([
+    const [configuration, batchHistory, runHistory, promotionItems, workspaceItems, reviewItems, workspaceDetails] = await Promise.all([
       configurationState(root, warnings),
       loadBatchHistory(root),
       loadRunHistory(root),
       loadPromotions(root),
-      listWorkspaces(root)
+      listWorkspaces(root),
+      listReviewResults(root),
+      listManagedWorkspaces(root)
     ]);
 
     for (const [index, message] of [...batchHistory.warnings, ...runHistory.warnings].entries()) warnings.push(structuredWarning(message, warnings.length + index));
@@ -194,6 +217,7 @@ export class AriadneTuiService implements TuiDataService {
     for (const item of promotionItems) if (item.warning) warnings.push(structuredWarning(item.warning, warnings.length, { path: path.relative(root, item.path) }));
     const workspaces = workspaceItems.flatMap((item) => item.record ? [item.record] : []);
     for (const item of workspaceItems) if (item.warning) warnings.push(structuredWarning(item.warning, warnings.length, { path: path.relative(root, item.metadataPath) }));
+    for (const message of [...reviewItems.warnings, ...workspaceDetails.warnings]) warnings.push(structuredWarning(message, warnings.length));
     await Promise.all(workspaces.map(async (workspace) => {
       if (["removed", "failed"].includes(workspace.state)) return;
       const workspacePath = path.resolve(root, workspace.path);
@@ -277,10 +301,17 @@ export class AriadneTuiService implements TuiDataService {
     if (batches.length === 0 && tasks.length === 0) warnings.push(structuredWarning("No Ariadne history found. Run ariadne run to create the first workflow.", warnings.length, { code: "history-empty" }));
     const finalWarnings = deduplicateWarnings(warnings);
     return {
-      loadedAt: new Date().toISOString(), configuration, batches, tasks, workspaces, promotions, warnings: finalWarnings,
+      loadedAt: new Date().toISOString(), configuration, batches, tasks, workspaces, promotions,
+      results: reviewItems.results, workspaceDetails: workspaceDetails.workspaces, warnings: finalWarnings,
       attention: {
-        unappliedResults: tasks.filter((task) => task.resultState === "unapplied").length,
+        unappliedResults: reviewItems.results.filter((result) => result.resultState === "unapplied" && result.final).length,
+        conflictedResults: reviewItems.results.filter((result) => result.resultState === "conflicted" && result.final).length,
+        applicationFailures: reviewItems.results.filter((result) => result.resultState === "application-failed" && result.final).length,
+        ineligibleResults: reviewItems.results.filter((result) => result.resultState === "apply-ineligible" && result.final).length,
+        missingOrCorruptResults: reviewItems.results.filter((result) => ["missing-artifact", "corrupt", "unavailable"].includes(result.resultState) && result.final).length,
         retainedWorktrees: workspaces.filter((workspace) => workspace.state === "retained").length,
+        staleWorktrees: workspaceDetails.workspaces.filter((workspace) => workspace.state === "stale" || workspace.state === "missing").length,
+        cleanupFailures: workspaceDetails.cleanupFailures,
         failedWorkflows: batches.filter((batch) => ["partially_failed", "failed", "interrupted", "abandoned"].includes(batch.record.batchStatus)).length,
         warnings: finalWarnings.length
       }
@@ -312,6 +343,22 @@ export class AriadneTuiService implements TuiDataService {
   loadLogPreview(relativePath: string) {
     return readLogPreview(this.root, relativePath);
   }
+
+  loadResultSummary(runId: string) { return loadResultSummary(this.root, runId); }
+  loadFileDiff(runId: string, changeIdOrPath: string, cursor?: string) { return loadFileDiff(this.root, runId, changeIdOrPath, cursor); }
+  compareAttemptResults(leftRunId: string, rightRunId: string) { return compareAttemptResults(this.root, leftRunId, rightRunId); }
+  inspectApplyEligibility(runId: string) { return inspectApplyEligibility(this.root, runId); }
+  previewApplyResult(runId: string) { return previewApplyResult(this.root, runId); }
+  applyReviewedResult(runId: string, fingerprint: string, onProgress?: (stage: string) => void, signal?: AbortSignal) { return applyReviewedResult(this.root, runId, fingerprint, { onProgress, signal }); }
+  previewDiscardResult(runId: string) { return previewDiscardResult(this.root, runId); }
+  discardReviewedResult(runId: string, onProgress?: (stage: string) => void, signal?: AbortSignal) { return discardReviewedResult(this.root, runId, { onProgress, signal }); }
+  previewPatchExport(runId: string) { return previewPatchExport(this.root, runId); }
+  async exportPatch(runId: string, destination: string, onProgress?: (stage: string) => void, signal?: AbortSignal) { const result = await exportPatch(this.root, runId, destination, false, { onProgress, signal }); return { path: result.path }; }
+  loadWorkspaceDetail(workspaceId: string) { return loadWorkspaceDetail(this.root, workspaceId); }
+  previewWorkspaceCleanup(workspaceId: string) { return previewWorkspaceCleanup(this.root, workspaceId); }
+  previewEligibleWorkspaceCleanup() { return previewEligibleWorkspaceCleanup(this.root); }
+  cleanWorkspace(workspaceId: string, onProgress?: (stage: string) => void, signal?: AbortSignal) { return cleanWorkspace(this.root, workspaceId, { onProgress, signal }); }
+  cleanEligibleWorkspaces(onProgress?: (stage: string) => void, signal?: AbortSignal) { return cleanEligibleWorkspaces(this.root, { onProgress, signal }); }
 
   inspectWorkflowOptions() {
     return inspectWorkflowOptions({ cwd: this.root });

@@ -16,6 +16,10 @@ Tasks default to exclusive. An exclusive task starts only when nothing else is a
 
 For worktree workflows, every successful non-empty safe attempt creates `refs/ariadne/results/<run-id>`. Dependents receive successful dependency commits in plan order. Apply promotes the unresolved closure in the same order; batch scores and task status never make a result automatically apply.
 
+Only the final attempt selected by a workflow task record is promotable. Earlier retries remain immutable review inputs and can be summarized, diffed, compared, and exported. Standalone runs remain promotable when their isolated result is otherwise eligible. The review application service derives execution, verification, policy, artifact, eligibility, promotion, and workspace dimensions independently so one status never hides another.
+
+Apply is a three-stage operator action: eligibility, transient preflight, and dedicated confirmation. Execution accepts only the fingerprint of the currently previewed repository, branch, target revision, and dependency closure, then revalidates it under the exclusive management lock. A moved target requires a new preview. Apply/discard never merge attempts or select an earlier result implicitly.
+
 ## Retries
 
 Automatic retries cover agent nonzero exit, verification failure, and timeout with sufficiently confirmed cleanup. Spawn, policy, parallel-safety, planning, internal, blocked, and interrupted outcomes do not retry. Fixed delays remain constant; exponential delays double deterministically and cap at one hour. No jitter is used.

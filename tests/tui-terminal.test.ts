@@ -8,8 +8,8 @@ import type { BatchRecord } from "../src/types/index.js";
 import type { TuiDataService, TuiSnapshot } from "../src/tui/types.js";
 
 const snapshot: TuiSnapshot = {
-  loadedAt: "2026-07-16T00:00:00.000Z", configuration: "missing", batches: [], tasks: [], workspaces: [], promotions: [],
-  warnings: [], attention: { unappliedResults: 0, retainedWorktrees: 0, failedWorkflows: 0, warnings: 0 }
+  loadedAt: "2026-07-16T00:00:00.000Z", configuration: "missing", batches: [], tasks: [], workspaces: [], promotions: [], results: [], workspaceDetails: [],
+  warnings: [], attention: { unappliedResults: 0, conflictedResults: 0, applicationFailures: 0, ineligibleResults: 0, missingOrCorruptResults: 0, retainedWorktrees: 0, staleWorktrees: 0, cleanupFailures: 0, failedWorkflows: 0, warnings: 0 }
 };
 
 const service: TuiDataService = {

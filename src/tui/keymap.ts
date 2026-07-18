@@ -34,7 +34,20 @@ export type KeyAction =
   | "resume-workflow"
   | "rerun-failed"
   | "rerun-branch"
-  | "rerun-all";
+  | "rerun-all"
+  | "toggle-dashboard-focus"
+  | "cycle-result-filter"
+  | "preview-apply"
+  | "preview-discard"
+  | "compare-attempts"
+  | "inspect-workspace"
+  | "export-patch"
+  | "next-file"
+  | "previous-file"
+  | "cleanup-dry-run"
+  | "cleanup-selected"
+  | "cleanup-all"
+  | "acknowledge-risk";
 
 export interface KeyBinding {
   keys: string;
@@ -59,8 +72,8 @@ export const KEYMAP: KeyBinding[] = [
   { keys: "Tab", label: "batch/task", action: "toggle-history", contexts: ["history"], footerPriority: 9 },
   { keys: "f", label: "filter", action: "cycle-filter", contexts: ["history"], footerPriority: 8 },
   { keys: "a", label: "attempt summary", action: "toggle-attempts", contexts: ["workflow"], footerPriority: 8 },
-  { keys: "[", label: "previous attempt", action: "previous-attempt", contexts: ["attempt"], footerPriority: 10 },
-  { keys: "]", label: "next attempt", action: "next-attempt", contexts: ["attempt"], footerPriority: 10 },
+  { keys: "[", label: "previous attempt", action: "previous-attempt", contexts: ["attempt", "compare"], footerPriority: 10 },
+  { keys: "]", label: "next attempt", action: "next-attempt", contexts: ["attempt", "compare"], footerPriority: 10 },
   { keys: "Tab", label: "next process", action: "next-process", contexts: ["attempt"], footerPriority: 9 },
   { keys: "o", label: "stdout", action: "stdout", contexts: ["attempt"], footerPriority: 8 },
   { keys: "e", label: "stderr", action: "stderr", contexts: ["attempt"], footerPriority: 8 },
@@ -80,18 +93,48 @@ export const KEYMAP: KeyBinding[] = [
   { keys: "R", label: "resume", action: "resume-workflow", contexts: ["workflow"], footerPriority: 7 },
   { keys: "f", label: "rerun failed", action: "rerun-failed", contexts: ["workflow"], footerPriority: 7 },
   { keys: "B", label: "rerun branch", action: "rerun-branch", contexts: ["workflow"], footerPriority: 6 },
-  { keys: "A", label: "rerun all", action: "rerun-all", contexts: ["workflow"], footerPriority: 6 }
+  { keys: "A", label: "rerun all", action: "rerun-all", contexts: ["workflow"], footerPriority: 6 },
+  { keys: "Tab", label: "focus", action: "toggle-dashboard-focus", contexts: ["dashboard"], footerPriority: 9 },
+  { keys: "f", label: "filter", action: "cycle-result-filter", contexts: ["results"], footerPriority: 9 },
+  { keys: "a", label: "apply", action: "preview-apply", contexts: ["result"], footerPriority: 10 },
+  { keys: "x", label: "discard", action: "preview-discard", contexts: ["result"], footerPriority: 9 },
+  { keys: "c", label: "compare", action: "compare-attempts", contexts: ["result"], footerPriority: 8 },
+  { keys: "w", label: "workspace", action: "inspect-workspace", contexts: ["result"], footerPriority: 8 },
+  { keys: "e", label: "export", action: "export-patch", contexts: ["result"], footerPriority: 8 },
+  { keys: "n", label: "next file", action: "next-file", contexts: ["diff"], footerPriority: 10 },
+  { keys: "N", label: "previous file", action: "previous-file", contexts: ["diff"], footerPriority: 10 },
+  { keys: "PgUp", label: "page up", action: "page-up", contexts: ["diff"], footerPriority: 9 },
+  { keys: "PgDn", label: "page down", action: "page-down", contexts: ["diff"], footerPriority: 9 },
+  { keys: "d", label: "dry run", action: "cleanup-dry-run", contexts: ["workspaces"], footerPriority: 9 },
+  { keys: "x", label: "clean selected", action: "cleanup-selected", contexts: ["workspaces", "workspace"], footerPriority: 9 },
+  { keys: "c", label: "clean eligible", action: "cleanup-all", contexts: ["workspaces"], footerPriority: 8 },
+  { keys: "Space", label: "acknowledge", action: "acknowledge-risk", contexts: ["apply-confirm"], footerPriority: 10 }
 ];
 
 export function bindingsFor(screen: Screen["kind"]): KeyBinding[] {
   return KEYMAP.filter((binding) => {
-    if (binding.action === "inspect" && !["dashboard", "history", "workflow", "task", "planner", "plan", "options", "confirm", "live", "cancel-confirm", "exit-confirm", "resume-preview", "rerun-preview"].includes(screen)) return false;
+    if (binding.action === "inspect" && !["dashboard", "history", "workflow", "task", "planner", "plan", "options", "confirm", "live", "cancel-confirm", "exit-confirm", "resume-preview", "rerun-preview", "results", "result", "changes", "apply-eligibility", "apply-preview", "apply-confirm", "discard-preview", "discard-confirm", "export-preview", "workspaces", "workspace", "cleanup-preview", "cleanup-confirm"].includes(screen)) return false;
     if (binding.action === "back" && screen === "dashboard") return false;
     return binding.contexts.includes("global") || binding.contexts.includes(screen);
   });
 }
 
 export function resolveKey(input: string, key: Key, screen: Screen["kind"]): KeyAction | undefined {
+  if (screen === "dashboard" && key.tab) return "toggle-dashboard-focus";
+  if (screen === "results" && input === "f") return "cycle-result-filter";
+  if (screen === "result" && input === "a") return "preview-apply";
+  if (screen === "result" && input === "x") return "preview-discard";
+  if (screen === "result" && input === "c") return "compare-attempts";
+  if (screen === "result" && input === "w") return "inspect-workspace";
+  if (screen === "result" && input === "e") return "export-patch";
+  if (screen === "diff" && input === "n") return "next-file";
+  if (screen === "diff" && input === "N") return "previous-file";
+  if (screen === "diff" && key.pageUp) return "page-up";
+  if (screen === "diff" && key.pageDown) return "page-down";
+  if (screen === "workspaces" && input === "d") return "cleanup-dry-run";
+  if (["workspaces", "workspace"].includes(screen) && input === "x") return "cleanup-selected";
+  if (screen === "workspaces" && input === "c") return "cleanup-all";
+  if (screen === "apply-confirm" && input === " ") return "acknowledge-risk";
   if (screen === "options" && (key.leftArrow || input === "h")) return "option-left";
   if (screen === "options" && (key.rightArrow || input === "l")) return "option-right";
   if (screen === "planner" && input === " ") return "toggle-task";
@@ -107,6 +150,8 @@ export function resolveKey(input: string, key: Key, screen: Screen["kind"]): Key
   if (screen === "workflow" && input === "f") return "rerun-failed";
   if (screen === "workflow" && input === "B") return "rerun-branch";
   if (screen === "workflow" && input === "A") return "rerun-all";
+  if (screen === "compare" && input === "[") return "previous-attempt";
+  if (screen === "compare" && input === "]") return "next-attempt";
   if (input === "q") return "quit";
   if (input === "?") return "help";
   if (key.escape || input === "b") return "back";

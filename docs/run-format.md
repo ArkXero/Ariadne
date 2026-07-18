@@ -28,6 +28,8 @@ Task states are `pending`, `ready`, `running`, `retry_wait`, `succeeded`, `faile
 - `.ariadne/batches/latest.json`: latest terminal batch.
 - `.ariadne/latest.json`: latest completed invocation and its record kind.
 
-Workspace record v1 lives at `.ariadne/worktrees/<workspace-id>/workspace.json`. Change artifact v1 lives with the child run. Promotion event v1 lives under `.ariadne/promotions/`; apply/discard never rewrite execution records or execution latest pointers.
+Workspace record v1 lives at `.ariadne/worktrees/<workspace-id>/workspace.json`. Change-artifact v2 lives with the child run and adds stable change IDs, old/new Git object/path/kind/mode/size/symlink metadata, binary/rename/copy similarity, and hashed bounded per-file text-diff metadata. Promotion-record v2 lives under `.ariadne/promotions/` and adds structured conflicts, failure category/code, target-modified/rollback state, manual-recovery commands, and discard cleanup details. Change/promotion v1 records normalize on read without rewriting.
+
+Management-action v1 lives under `.ariadne/actions/` for completed/interrupted patch exports and workspace cleanup. Cleanup dry-run creates no action. Apply, discard, export, and cleanup never rewrite execution records or execution latest pointers.
 
 Pointers update only after valid terminal manifests exist. Paths are project-relative POSIX strings and repository identity is opaque. Configured forbidden and high-confidence sensitive paths are excluded from result commits/patches. Streaming log and preview redaction is best effort; Ariadne is not a secrets vault.

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useApp, useInput, useStdout } from "ink";
-import { AriadneTuiView, activeBatches, artifactFor, filteredBatches, filteredTasks, processesFor, recentBatches } from "./components.js";
+import { filterReviewResults, type ReviewResultFilter } from "../core/change-application.js";
+import { AriadneTuiView, activeBatches, artifactFor, attentionCategories, filteredBatches, filteredTasks, filteredWorkspaceDetails, processesFor, recentBatches } from "./components.js";
 import { resolveKey } from "./keymap.js";
 import { initialTuiState, tuiReducer } from "./state.js";
 import { createRuntimeView, reconcileRuntimeRecord, reduceRuntimeEvent } from "./runtime-state.js";
@@ -22,7 +23,10 @@ function initialOperationalState(): TuiOperationalState {
     draft: { taskIds: [], overrides: {}, optionBaseline: {} },
     cancellationRequested: false,
     detached: false,
-    clock: Date.now()
+    clock: Date.now(),
+    reviewLoading: false,
+    actionLocked: false,
+    riskAcknowledged: false
   };
 }
 
@@ -37,7 +41,11 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
   const { stdout } = useStdout();
   const [terminalSize, setTerminalSize] = useState(() => dimensions ?? ({ width: stdout.columns || 80, height: stdout.rows || 24 }));
   const generation = useRef(0);
+  const reviewGeneration = useRef(0);
   const handle = useRef<WorkflowExecutionHandle | undefined>(undefined);
+  const actionAbort = useRef<AbortController | undefined>(undefined);
+  const exitAfterAction = useRef(false);
+  const riskAcknowledged = useRef(false);
   const unsubscribeRuntime = useRef<(() => void) | undefined>(undefined);
   const screen = useRef(state.screen);
   const mounted = useRef(true);
@@ -99,6 +107,84 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
   const setOperationError = useCallback((error: unknown) => {
     setOperational((current) => ({ ...current, loading: false, error: error instanceof Error ? error.message : String(error) }));
   }, []);
+
+  const setReviewError = useCallback((error: unknown) => {
+    actionAbort.current = undefined;
+    setOperational((current) => ({
+      ...current,
+      reviewLoading: false,
+      actionLocked: false,
+      actionProgress: undefined,
+      reviewError: error instanceof Error ? error.message : String(error)
+    }));
+  }, []);
+
+  const setActionError = useCallback((error: unknown) => {
+    actionAbort.current = undefined;
+    setOperational((current) => ({
+      ...current,
+      reviewLoading: false,
+      actionLocked: false,
+      actionProgress: undefined,
+      applyPreview: undefined,
+      reviewError: error instanceof Error ? error.message : String(error),
+      actionMessage: "The action did not complete. Review the error and create a fresh preview before retrying."
+    }));
+    dispatch({ type: "navigate", screen: { kind: "action-result", selection: 0 } });
+    refresh();
+    if (exitAfterAction.current) {
+      exitAfterAction.current = false;
+      exit();
+    }
+  }, [exit, refresh]);
+
+  const reviewRunId = ["result", "changes", "diff"].includes(state.screen.kind)
+    ? (state.screen as Extract<Screen, { kind: "result" | "changes" | "diff" }>).runId
+    : undefined;
+
+  useEffect(() => {
+    if (!reviewRunId || !service.loadResultSummary || operational.resultSummary?.result.runId === reviewRunId || operational.reviewLoading) return;
+    const request = ++reviewGeneration.current;
+    setOperational((current) => ({ ...current, reviewLoading: true, reviewError: undefined, resultSummary: undefined, diffPage: undefined }));
+    void service.loadResultSummary(reviewRunId).then((resultSummary) => {
+      if (!mounted.current || request !== reviewGeneration.current) return;
+      setOperational((current) => ({ ...current, reviewLoading: false, reviewError: undefined, resultSummary }));
+    }, (error: unknown) => {
+      if (request === reviewGeneration.current) setReviewError(error);
+    });
+  }, [operational.resultSummary?.result.runId, operational.reviewLoading, reviewRunId, service, setReviewError]);
+
+  useEffect(() => {
+    if (state.screen.kind !== "diff" || !service.loadFileDiff || operational.reviewLoading) return;
+    const summary = operational.resultSummary;
+    const change = summary?.result.runId === state.screen.runId ? summary.changes[state.screen.fileIndex] : undefined;
+    if (!change) return;
+    const expectedCursor = state.screen.cursor ?? "start";
+    if (operational.diffPage?.runId === state.screen.runId
+      && (operational.diffPage.change.changeId ?? operational.diffPage.change.path) === (change.changeId ?? change.path)
+      && operational.diffPage.cursor === expectedCursor) return;
+    const request = ++reviewGeneration.current;
+    setOperational((current) => ({ ...current, reviewLoading: true, reviewError: undefined, diffPage: undefined }));
+    void service.loadFileDiff(state.screen.runId, change.changeId ?? change.path, state.screen.cursor).then((diffPage) => {
+      if (!mounted.current || request !== reviewGeneration.current) return;
+      setOperational((current) => ({ ...current, reviewLoading: false, reviewError: undefined, diffPage }));
+    }, (error: unknown) => {
+      if (request === reviewGeneration.current) setReviewError(error);
+    });
+  }, [operational.diffPage, operational.resultSummary, operational.reviewLoading, service, setReviewError, state.screen]);
+
+  useEffect(() => {
+    if (state.screen.kind !== "workspace" || !service.loadWorkspaceDetail) return;
+    if (operational.workspaceDetail?.workspaceId === state.screen.workspaceId || operational.reviewLoading) return;
+    const request = ++reviewGeneration.current;
+    setOperational((current) => ({ ...current, reviewLoading: true, reviewError: undefined, workspaceDetail: undefined }));
+    void service.loadWorkspaceDetail(state.screen.workspaceId).then((workspaceDetail) => {
+      if (!mounted.current || request !== reviewGeneration.current) return;
+      setOperational((current) => ({ ...current, reviewLoading: false, reviewError: undefined, workspaceDetail }));
+    }, (error: unknown) => {
+      if (request === reviewGeneration.current) setReviewError(error);
+    });
+  }, [operational.reviewLoading, operational.workspaceDetail?.workspaceId, service, setReviewError, state.screen]);
 
   const reconcileActive = useCallback(() => {
     const current = handle.current;
@@ -251,11 +337,142 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
     void active.requestCancellation("Cancelled from the operational TUI.").catch(setOperationError);
   }, [service, setOperationError]);
 
+  const inspectEligibility = useCallback((runId: string) => {
+    if (!service.inspectApplyEligibility) return setReviewError(new Error("Apply review is unavailable."));
+    const request = ++reviewGeneration.current;
+    riskAcknowledged.current = false;
+    setOperational((current) => ({ ...current, reviewLoading: true, reviewError: undefined, applyEligibility: undefined, applyPreview: undefined, riskAcknowledged: false }));
+    void service.inspectApplyEligibility(runId).then((applyEligibility) => {
+      if (!mounted.current || request !== reviewGeneration.current) return;
+      setOperational((current) => ({ ...current, reviewLoading: false, applyEligibility }));
+      dispatch({ type: "navigate", screen: { kind: "apply-eligibility", runId, selection: 0 } });
+    }, (error: unknown) => { if (request === reviewGeneration.current) setReviewError(error); });
+  }, [service, setReviewError]);
+
+  const preflightApply = useCallback((runId: string) => {
+    if (!service.previewApplyResult) return setReviewError(new Error("Apply preflight is unavailable."));
+    const request = ++reviewGeneration.current;
+    riskAcknowledged.current = false;
+    setOperational((current) => ({ ...current, reviewLoading: true, reviewError: undefined, applyPreview: undefined, riskAcknowledged: false }));
+    void service.previewApplyResult(runId).then((applyPreview) => {
+      if (!mounted.current || request !== reviewGeneration.current) return;
+      setOperational((current) => ({ ...current, reviewLoading: false, applyPreview }));
+      dispatch({ type: "navigate", screen: { kind: "apply-preview", runId, selection: 0 } });
+    }, (error: unknown) => { if (request === reviewGeneration.current) setReviewError(error); });
+  }, [service, setReviewError]);
+
+  const executeApply = useCallback((runId: string) => {
+    const preview = operational.applyPreview;
+    if (!service.applyReviewedResult || preview?.runId !== runId || !preview.fingerprint) return setReviewError(new Error("A fresh apply preview is required."));
+    if (preview.highRiskReasons.length > 0 && !riskAcknowledged.current) return setReviewError(new Error("Acknowledge the elevated risk with Space before applying."));
+    const controller = new AbortController();
+    actionAbort.current = controller;
+    setOperational((current) => ({ ...current, actionLocked: true, reviewError: undefined, actionProgress: "validating", promotionResult: undefined, actionMessage: undefined }));
+    void service.applyReviewedResult(runId, preview.fingerprint, (stage) => {
+      if (mounted.current) setOperational((current) => ({ ...current, actionProgress: stage }));
+    }, controller.signal).then((promotionResult) => {
+      if (!mounted.current) return;
+      actionAbort.current = undefined;
+      setOperational((current) => ({ ...current, actionLocked: false, actionProgress: undefined, promotionResult, actionMessage: promotionResult.status === "succeeded" ? "Result applied to the target repository." : `Apply ended with status ${promotionResult.status}.` }));
+      dispatch({ type: "navigate", screen: { kind: "action-result", selection: 0 } });
+      refresh();
+      if (exitAfterAction.current) { exitAfterAction.current = false; exit(); }
+    }, setActionError);
+  }, [exit, operational.applyPreview, refresh, service, setActionError, setReviewError]);
+
+  const inspectDiscard = useCallback((runId: string) => {
+    if (!service.previewDiscardResult) return setReviewError(new Error("Discard review is unavailable."));
+    const request = ++reviewGeneration.current;
+    setOperational((current) => ({ ...current, reviewLoading: true, reviewError: undefined, discardPreview: undefined }));
+    void service.previewDiscardResult(runId).then((discardPreview) => {
+      if (!mounted.current || request !== reviewGeneration.current) return;
+      setOperational((current) => ({ ...current, reviewLoading: false, discardPreview }));
+      dispatch({ type: "navigate", screen: { kind: "discard-preview", runId, selection: 0 } });
+    }, (error: unknown) => { if (request === reviewGeneration.current) setReviewError(error); });
+  }, [service, setReviewError]);
+
+  const executeDiscard = useCallback((runId: string) => {
+    if (!service.discardReviewedResult) return setReviewError(new Error("Discard is unavailable."));
+    const controller = new AbortController();
+    actionAbort.current = controller;
+    setOperational((current) => ({ ...current, actionLocked: true, reviewError: undefined, actionProgress: "validating", promotionResult: undefined, actionMessage: undefined }));
+    void service.discardReviewedResult(runId, (stage) => {
+      if (mounted.current) setOperational((current) => ({ ...current, actionProgress: stage }));
+    }, controller.signal).then((promotionResult) => {
+      if (!mounted.current) return;
+      actionAbort.current = undefined;
+      setOperational((current) => ({ ...current, actionLocked: false, actionProgress: undefined, promotionResult, actionMessage: "Result discarded; immutable history and review artifacts were preserved." }));
+      dispatch({ type: "navigate", screen: { kind: "action-result", selection: 0 } });
+      refresh();
+      if (exitAfterAction.current) { exitAfterAction.current = false; exit(); }
+    }, setActionError);
+  }, [exit, refresh, service, setActionError, setReviewError]);
+
+  const inspectExport = useCallback((runId: string) => {
+    if (!service.previewPatchExport) return setReviewError(new Error("Patch export is unavailable."));
+    const request = ++reviewGeneration.current;
+    setOperational((current) => ({ ...current, reviewLoading: true, reviewError: undefined, patchExportPreview: undefined }));
+    void service.previewPatchExport(runId).then((patchExportPreview) => {
+      if (!mounted.current || request !== reviewGeneration.current) return;
+      setOperational((current) => ({ ...current, reviewLoading: false, patchExportPreview }));
+      dispatch({ type: "navigate", screen: { kind: "export-preview", runId, selection: 0 } });
+    }, (error: unknown) => { if (request === reviewGeneration.current) setReviewError(error); });
+  }, [service, setReviewError]);
+
+  const executeExport = useCallback((runId: string) => {
+    const preview = operational.patchExportPreview;
+    if (!service.exportPatch || preview?.runId !== runId || preview.exists) return setReviewError(new Error(preview?.exists ? "The previewed export destination now exists; refresh for a new destination." : "A fresh export preview is required."));
+    const controller = new AbortController();
+    actionAbort.current = controller;
+    setOperational((current) => ({ ...current, actionLocked: true, reviewError: undefined, actionProgress: "writing", actionMessage: undefined }));
+    void service.exportPatch(runId, preview.destination, (stage) => {
+      if (mounted.current) setOperational((current) => ({ ...current, actionProgress: stage }));
+    }, controller.signal).then((result) => {
+      if (!mounted.current) return;
+      actionAbort.current = undefined;
+      setOperational((current) => ({ ...current, actionLocked: false, actionProgress: undefined, actionMessage: `Safe patch exported to ${result.path}.` }));
+      dispatch({ type: "navigate", screen: { kind: "action-result", selection: 0 } });
+      refresh();
+      if (exitAfterAction.current) { exitAfterAction.current = false; exit(); }
+    }, setActionError);
+  }, [exit, operational.patchExportPreview, refresh, service, setActionError, setReviewError]);
+
+  const inspectCleanup = useCallback((workspaceId?: string) => {
+    const operation = workspaceId ? service.previewWorkspaceCleanup?.(workspaceId) : service.previewEligibleWorkspaceCleanup?.();
+    if (!operation) return setReviewError(new Error("Workspace cleanup preview is unavailable."));
+    const request = ++reviewGeneration.current;
+    setOperational((current) => ({ ...current, reviewLoading: true, reviewError: undefined, cleanupPreview: undefined }));
+    void operation.then((cleanupPreview) => {
+      if (!mounted.current || request !== reviewGeneration.current) return;
+      setOperational((current) => ({ ...current, reviewLoading: false, cleanupPreview }));
+      dispatch({ type: "navigate", screen: { kind: "cleanup-preview", workspaceId, selection: 0 } });
+    }, (error: unknown) => { if (request === reviewGeneration.current) setReviewError(error); });
+  }, [service, setReviewError]);
+
+  const executeCleanup = useCallback((workspaceId?: string) => {
+    const controller = new AbortController();
+    const progress = (stage: string) => {
+      if (mounted.current) setOperational((current) => ({ ...current, actionProgress: stage }));
+    };
+    const operation = workspaceId ? service.cleanWorkspace?.(workspaceId, progress, controller.signal) : service.cleanEligibleWorkspaces?.(progress, controller.signal);
+    if (!operation) return setReviewError(new Error("Workspace cleanup is unavailable."));
+    actionAbort.current = controller;
+    setOperational((current) => ({ ...current, actionLocked: true, reviewError: undefined, actionProgress: "validating ownership", cleanupResult: undefined, actionMessage: undefined }));
+    void operation.then((cleanupResult) => {
+      if (!mounted.current) return;
+      actionAbort.current = undefined;
+      setOperational((current) => ({ ...current, actionLocked: false, actionProgress: undefined, cleanupResult, actionMessage: `Workspace cleanup finished: ${cleanupResult.cleaned.length} cleaned, ${cleanupResult.skipped.length} skipped, ${cleanupResult.failed.length} failed.` }));
+      dispatch({ type: "navigate", screen: { kind: "action-result", selection: 0 } });
+      refresh();
+      if (exitAfterAction.current) { exitAfterAction.current = false; exit(); }
+    }, setActionError);
+  }, [exit, refresh, service, setActionError, setReviewError]);
+
   function selectableCount(): number {
     const snapshot = state.snapshot;
     if (!snapshot) return 0;
     const screen = state.screen;
-    if (screen.kind === "dashboard") return activeBatches(snapshot).length + recentBatches(snapshot).length;
+    if (screen.kind === "dashboard") return screen.focus === "attention" ? attentionCategories(snapshot).length : activeBatches(snapshot).length + recentBatches(snapshot).length;
     if (screen.kind === "history") return screen.mode === "batches" ? filteredBatches(snapshot, screen.filter).length : filteredTasks(snapshot, screen.filter).length;
     if (screen.kind === "workflow") return snapshot.batches.find((batch) => batch.key === screen.batchKey)?.report.tasks.length ?? 0;
     if (screen.kind === "task") return snapshot.tasks.find((task) => task.key === screen.taskKey)?.attempts.length ?? 0;
@@ -264,11 +481,14 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
     if (["plan", "resume-preview", "rerun-preview"].includes(screen.kind)) return operational.preview?.plan.tasks.length ?? 0;
     if (screen.kind === "options") return 4;
     if (screen.kind === "live") return operational.runtime?.tasks.length ?? 0;
+    if (screen.kind === "results") return filterReviewResults(snapshot.results, screen.filter).length;
+    if (screen.kind === "changes") return operational.resultSummary?.changes.length ?? 0;
+    if (screen.kind === "workspaces") return filteredWorkspaceDetails(snapshot, screen.filter).length;
     return 0;
   }
 
   function selection(): number {
-    return state.screen.kind === "help" || state.screen.kind === "attempt" ? 0 : state.screen.selection;
+    return state.screen.kind === "help" || state.screen.kind === "attempt" || state.screen.kind === "diff" ? 0 : state.screen.selection;
   }
 
   function inspect(): void {
@@ -276,10 +496,16 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
     if (!snapshot) return;
     const screen = state.screen;
     if (screen.kind === "dashboard") {
-      const item = [...activeBatches(snapshot), ...recentBatches(snapshot)][screen.selection];
-      if (item && operational.runtime?.batchId === item.key && !operational.runtime.completedManifest) {
-        dispatch({ type: "navigate", screen: { kind: "live", selection: 0, processIndex: 0, stream: "stdout", scroll: 0 } });
-      } else if (item) dispatch({ type: "navigate", screen: { kind: "workflow", batchKey: item.key, selection: 0 } });
+      if (screen.focus === "attention") {
+        const category = attentionCategories(snapshot)[screen.selection];
+        if (category?.target.kind === "results") dispatch({ type: "navigate", screen: { kind: "results", filter: category.target.filter, selection: 0 } });
+        else if (category?.target.kind === "workspaces") dispatch({ type: "navigate", screen: { kind: "workspaces", filter: category.target.filter, selection: 0 } });
+      } else {
+        const item = [...activeBatches(snapshot), ...recentBatches(snapshot)][screen.selection];
+        if (item && operational.runtime?.batchId === item.key && !operational.runtime.completedManifest) {
+          dispatch({ type: "navigate", screen: { kind: "live", selection: 0, processIndex: 0, stream: "stdout", scroll: 0 } });
+        } else if (item) dispatch({ type: "navigate", screen: { kind: "workflow", batchKey: item.key, selection: 0 } });
+      }
     } else if (screen.kind === "history") {
       if (screen.mode === "batches") {
         const item = filteredBatches(snapshot, screen.filter)[screen.selection];
@@ -296,6 +522,16 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
     } else if (screen.kind === "task") {
       const task = snapshot.tasks.find((entry) => entry.key === screen.taskKey);
       if (task?.attempts[screen.selection]) dispatch({ type: "navigate", screen: { kind: "attempt", taskKey: task.key, attemptIndex: screen.selection, processIndex: 0, stream: "stdout", scroll: 0 } });
+    } else if (screen.kind === "results") {
+      const result = filterReviewResults(snapshot.results, screen.filter)[screen.selection];
+      if (result) dispatch({ type: "navigate", screen: { kind: "result", runId: result.runId, selection: 0 } });
+    } else if (screen.kind === "result") {
+      dispatch({ type: "navigate", screen: { kind: "changes", runId: screen.runId, selection: 0 } });
+    } else if (screen.kind === "changes") {
+      if (operational.resultSummary?.changes[screen.selection]) dispatch({ type: "navigate", screen: { kind: "diff", runId: screen.runId, fileIndex: screen.selection, scroll: 0 } });
+    } else if (screen.kind === "workspaces") {
+      const workspace = filteredWorkspaceDetails(snapshot, screen.filter)[screen.selection];
+      if (workspace) dispatch({ type: "navigate", screen: { kind: "workspace", workspaceId: workspace.workspaceId, selection: 0 } });
     }
   }
 
@@ -303,6 +539,12 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
     const attached = handle.current ?? service.registry?.current();
     const active = attached && attached.latestSnapshot().state !== "completed";
     if (key.ctrl && input === "c") {
+      if (operational.actionLocked) {
+        exitAfterAction.current = true;
+        actionAbort.current?.abort();
+        setOperational((current) => ({ ...current, actionProgress: "Interruption requested; waiting for safe recovery." }));
+        return;
+      }
       if (active) dispatch({ type: "navigate", screen: { kind: "cancel-confirm", selection: 0 } });
       else exit();
       return;
@@ -310,6 +552,12 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
     const action = resolveKey(input, key, state.screen.kind);
     if (!action) return;
     if (action === "quit") {
+      if (operational.actionLocked) {
+        exitAfterAction.current = true;
+        actionAbort.current?.abort();
+        setOperational((current) => ({ ...current, actionProgress: "Interruption requested; waiting for safe recovery." }));
+        return;
+      }
       if (active) {
         if (state.screen.kind !== "exit-confirm") dispatch({ type: "navigate", screen: { kind: "exit-confirm", selection: 0 } });
       } else exit();
@@ -317,6 +565,15 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
     }
     if (action === "help") { if (state.screen.kind !== "help") dispatch({ type: "navigate", screen: { kind: "help" } }); return; }
     if (action === "back") {
+      if (operational.actionLocked) {
+        actionAbort.current?.abort();
+        setOperational((current) => ({ ...current, actionProgress: "Interruption requested; waiting for safe recovery." }));
+        return;
+      }
+      if (operational.reviewLoading) {
+        reviewGeneration.current += 1;
+        setOperational((current) => ({ ...current, reviewLoading: false, reviewError: undefined }));
+      }
       if (state.screen.kind === "live") dispatch({ type: "dashboard" });
       else if (state.screen.kind === "options") {
         setOperational((current) => ({ ...current, draft: { ...current.draft, overrides: { ...current.draft.optionBaseline } }, error: undefined }));
@@ -324,10 +581,95 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
       } else dispatch({ type: "back" });
       return;
     }
+    if (operational.actionLocked) return;
+    if (operational.reviewLoading) return;
     if (action === "refresh") { refresh(); if (state.screen.kind === "live") reconcileActive(); return; }
     if (action === "warnings") { dispatch({ type: "navigate", screen: { kind: "warnings", selection: 0 } }); return; }
     if (action === "history") { dispatch({ type: "navigate", screen: { kind: "history", mode: "batches", filter: "all", selection: 0 } }); return; }
     if (action === "plan-workflow") { openPlanner(); return; }
+    if (action === "toggle-dashboard-focus" && state.screen.kind === "dashboard") {
+      dispatch({ type: "replace-screen", screen: { ...state.screen, focus: state.screen.focus === "attention" ? "workflows" : "attention", selection: 0 } });
+      return;
+    }
+    if (action === "cycle-result-filter" && state.screen.kind === "results") {
+      const filters: ReviewResultFilter[] = ["all", "unapplied", "conflicted", "ineligible", "discarded", "applied", "retained-workspace", "missing-artifact"];
+      dispatch({ type: "replace-screen", screen: { ...state.screen, filter: filters[(filters.indexOf(state.screen.filter) + 1) % filters.length]!, selection: 0 } });
+      return;
+    }
+    if (action === "preview-apply" && state.screen.kind === "result") { inspectEligibility(state.screen.runId); return; }
+    if (action === "preview-discard" && state.screen.kind === "result") { inspectDiscard(state.screen.runId); return; }
+    if (action === "export-patch" && state.screen.kind === "result") { inspectExport(state.screen.runId); return; }
+    if (action === "inspect-workspace" && state.screen.kind === "result") {
+      const workspaceId = operational.resultSummary?.result.runId === state.screen.runId ? operational.resultSummary.workspaceId : undefined;
+      if (workspaceId) dispatch({ type: "navigate", screen: { kind: "workspace", workspaceId, selection: 0 } });
+      else setReviewError(new Error("This result has no managed workspace."));
+      return;
+    }
+    if (action === "compare-attempts" && state.screen.kind === "result") {
+      if (!service.compareAttemptResults) return setReviewError(new Error("Attempt comparison is unavailable."));
+      const runId = state.screen.runId;
+      const selected = state.snapshot?.results.find((result) => result.runId === runId);
+      const attempts = selected?.batchId
+        ? state.snapshot?.results.filter((result) => result.batchId === selected.batchId && result.taskId === selected.taskId).sort((left, right) => (left.attempt ?? 0) - (right.attempt ?? 0)) ?? []
+        : [];
+      const final = attempts.find((attempt) => attempt.final) ?? attempts.at(-1);
+      const finalIndex = final ? attempts.findIndex((attempt) => attempt.runId === final.runId) : -1;
+      const previous = finalIndex > 0 ? attempts[finalIndex - 1] : undefined;
+      if (!final || !previous) return setReviewError(new Error("No immediately preceding workflow attempt is available for comparison."));
+      const request = ++reviewGeneration.current;
+      setOperational((current) => ({ ...current, reviewLoading: true, reviewError: undefined, comparison: undefined }));
+      void service.compareAttemptResults(previous.runId, final.runId).then((comparison) => {
+        if (!mounted.current || request !== reviewGeneration.current) return;
+        setOperational((current) => ({ ...current, reviewLoading: false, comparison }));
+        dispatch({ type: "navigate", screen: { kind: "compare", runId: final.runId, otherRunId: previous.runId, selection: 0 } });
+      }, (error: unknown) => { if (request === reviewGeneration.current) setReviewError(error); });
+      return;
+    }
+    if ((action === "cleanup-dry-run" || action === "cleanup-selected") && (state.screen.kind === "workspaces" || state.screen.kind === "workspace")) {
+      const workspaceId = state.screen.kind === "workspace" ? state.screen.workspaceId : state.snapshot ? filteredWorkspaceDetails(state.snapshot, state.screen.filter)[state.screen.selection]?.workspaceId : undefined;
+      if (workspaceId) inspectCleanup(workspaceId);
+      else setReviewError(new Error("Select a managed workspace first."));
+      return;
+    }
+    if (action === "cleanup-all" && state.screen.kind === "workspaces") { inspectCleanup(); return; }
+    if (action === "acknowledge-risk" && state.screen.kind === "apply-confirm") {
+      riskAcknowledged.current = !riskAcknowledged.current;
+      const acknowledged = riskAcknowledged.current;
+      setOperational((current) => ({ ...current, riskAcknowledged: acknowledged, reviewError: undefined }));
+      return;
+    }
+    if (state.screen.kind === "diff") {
+      const current = state.screen;
+      const fileCount = operational.resultSummary?.changes.length ?? 0;
+      if (action === "next-file") dispatch({ type: "replace-screen", screen: { ...current, fileIndex: Math.min(Math.max(0, fileCount - 1), current.fileIndex + 1), cursor: undefined, scroll: 0 } });
+      else if (action === "previous-file") dispatch({ type: "replace-screen", screen: { ...current, fileIndex: Math.max(0, current.fileIndex - 1), cursor: undefined, scroll: 0 } });
+      else if (action === "page-down" && operational.diffPage?.nextCursor) dispatch({ type: "replace-screen", screen: { ...current, cursor: operational.diffPage.nextCursor, scroll: 0 } });
+      else if (action === "page-up" && operational.diffPage?.previousCursor) dispatch({ type: "replace-screen", screen: { ...current, cursor: operational.diffPage.previousCursor, scroll: 0 } });
+      else if (action === "up") dispatch({ type: "replace-screen", screen: { ...current, scroll: Math.max(0, current.scroll - 1) } });
+      else if (action === "down") dispatch({ type: "replace-screen", screen: { ...current, scroll: current.scroll + 1 } });
+      else if (action === "first") dispatch({ type: "replace-screen", screen: { ...current, cursor: undefined, scroll: 0 } });
+      else if (action === "last") dispatch({ type: "replace-screen", screen: { ...current, scroll: Number.MAX_SAFE_INTEGER } });
+      return;
+    }
+    if (state.screen.kind === "compare" && (action === "previous-attempt" || action === "next-attempt")) {
+      const current = state.screen;
+      const final = state.snapshot?.results.find((result) => result.runId === current.runId);
+      const alternatives = final?.batchId
+        ? state.snapshot?.results.filter((item) => item.batchId === final.batchId && item.taskId === final.taskId && item.runId !== final.runId).sort((left, right) => (left.attempt ?? 0) - (right.attempt ?? 0)) ?? []
+        : [];
+      const index = alternatives.findIndex((item) => item.runId === current.otherRunId);
+      const nextIndex = Math.max(0, Math.min(alternatives.length - 1, index + (action === "next-attempt" ? 1 : -1)));
+      const other = alternatives[nextIndex];
+      if (!other || !service.compareAttemptResults || other.runId === current.otherRunId) return;
+      const request = ++reviewGeneration.current;
+      setOperational((value) => ({ ...value, reviewLoading: true, reviewError: undefined, comparison: undefined }));
+      void service.compareAttemptResults(other.runId, current.runId).then((comparison) => {
+        if (!mounted.current || request !== reviewGeneration.current) return;
+        setOperational((value) => ({ ...value, reviewLoading: false, comparison }));
+        dispatch({ type: "replace-screen", screen: { ...current, otherRunId: other.runId } });
+      }, (error: unknown) => { if (request === reviewGeneration.current) setReviewError(error); });
+      return;
+    }
     if (action === "toggle-task" && state.screen.kind === "planner") {
       const task = operational.inspection?.tasks[state.screen.selection];
       if (task) setOperational((current) => ({
@@ -369,6 +711,29 @@ export function AriadneTui({ service, color, unicode, verbose, dimensions, onDet
         const liveTask = operational.runtime?.tasks[state.screen.selection];
         const persisted = liveTask ? state.snapshot?.tasks.find((task) => task.batchId === operational.runtime?.batchId && task.taskId === liveTask.id) : undefined;
         if (persisted) dispatch({ type: "navigate", screen: { kind: "task", taskKey: persisted.key, selection: Math.max(0, persisted.attempts.length - 1) } });
+      } else if (state.screen.kind === "apply-eligibility") {
+        if (operational.applyEligibility?.eligible) preflightApply(state.screen.runId);
+        else setReviewError(new Error("This result does not pass apply eligibility checks."));
+      } else if (state.screen.kind === "apply-preview") {
+        if (operational.applyPreview?.preflight === "clean" && operational.applyPreview.eligible) {
+          riskAcknowledged.current = false;
+          setOperational((current) => ({ ...current, riskAcknowledged: false, reviewError: undefined }));
+          dispatch({ type: "navigate", screen: { kind: "apply-confirm", runId: state.screen.runId, selection: 0 } });
+        } else setReviewError(new Error("Apply preflight is not clean; inspect the conflict details without mutating the target."));
+      } else if (state.screen.kind === "apply-confirm") {
+        executeApply(state.screen.runId);
+      } else if (state.screen.kind === "discard-preview") {
+        if (operational.discardPreview?.eligible || operational.discardPreview?.alreadyDiscarded) dispatch({ type: "navigate", screen: { kind: "discard-confirm", runId: state.screen.runId, selection: 0 } });
+        else setReviewError(new Error("This result cannot be discarded safely."));
+      } else if (state.screen.kind === "discard-confirm") {
+        executeDiscard(state.screen.runId);
+      } else if (state.screen.kind === "export-preview") {
+        executeExport(state.screen.runId);
+      } else if (state.screen.kind === "cleanup-preview") {
+        if (operational.cleanupPreview?.eligible) dispatch({ type: "navigate", screen: { kind: "cleanup-confirm", workspaceId: state.screen.workspaceId, selection: 0 } });
+        else setReviewError(new Error("No workspace in this preview is cleanup-eligible."));
+      } else if (state.screen.kind === "cleanup-confirm") {
+        executeCleanup(state.screen.workspaceId);
       } else inspect();
       return;
     }

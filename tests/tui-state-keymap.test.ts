@@ -14,8 +14,8 @@ function key(overrides: Partial<Key> = {}): Key {
 }
 
 const snapshot: TuiSnapshot = {
-  loadedAt: "2026-07-16T00:00:00.000Z", configuration: "available", batches: [], tasks: [], workspaces: [], promotions: [], warnings: [],
-  attention: { unappliedResults: 0, retainedWorktrees: 0, failedWorkflows: 0, warnings: 0 }
+  loadedAt: "2026-07-16T00:00:00.000Z", configuration: "available", batches: [], tasks: [], workspaces: [], promotions: [], results: [], workspaceDetails: [], warnings: [],
+  attention: { unappliedResults: 0, conflictedResults: 0, applicationFailures: 0, ineligibleResults: 0, missingOrCorruptResults: 0, retainedWorktrees: 0, staleWorktrees: 0, cleanupFailures: 0, failedWorkflows: 0, warnings: 0 }
 };
 
 describe("centralized TUI keymap", () => {
@@ -53,6 +53,19 @@ describe("centralized TUI keymap", () => {
     expect(resolveKey("R", key(), "workflow")).toBe("resume-workflow");
     expect(resolveKey("B", key(), "workflow")).toBe("rerun-branch");
     expect(bindingsFor("planner").map((binding) => binding.action)).toEqual(expect.arrayContaining(["toggle-task", "select-all", "clear-selection"]));
+  });
+
+  it("resolves centralized result review and workspace controls", () => {
+    expect(resolveKey("", key({ tab: true }), "dashboard")).toBe("toggle-dashboard-focus");
+    expect(resolveKey("f", key(), "results")).toBe("cycle-result-filter");
+    expect(resolveKey("a", key(), "result")).toBe("preview-apply");
+    expect(resolveKey("x", key(), "result")).toBe("preview-discard");
+    expect(resolveKey("n", key(), "diff")).toBe("next-file");
+    expect(resolveKey("", key({ pageDown: true }), "diff")).toBe("page-down");
+    expect(resolveKey("d", key(), "workspaces")).toBe("cleanup-dry-run");
+    expect(resolveKey(" ", key(), "apply-confirm")).toBe("acknowledge-risk");
+    expect(resolveKey("[", key(), "compare")).toBe("previous-attempt");
+    expect(bindingsFor("result").map((binding) => binding.action)).toEqual(expect.arrayContaining(["preview-apply", "preview-discard", "compare-attempts", "inspect-workspace", "export-patch"]));
   });
 });
 

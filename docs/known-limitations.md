@@ -2,13 +2,14 @@
 
 ## Ariadne TUI
 
-- The TUI is keyboard-first and can plan, launch, monitor, cancel, resume, and rerun workflows owned by the current Ariadne process. Promotion, discard, cleanup, remote execution, and mouse-first behavior remain CLI/out of scope.
+- The TUI is keyboard-first and can plan, launch, monitor, review, apply, discard, export, inspect/clean workspaces, cancel, resume, and rerun. Remote execution and mouse-first behavior remain out of scope.
 - Alternate-screen, raw-mode, color-depth, and Unicode behavior depend on the terminal emulator. `TERM=dumb` and non-UTF-8 locales receive ASCII frames and separators; `--no-color` or `NO_COLOR` removes styled text.
 - Terminals smaller than 40 columns or 12 rows show a recoverable minimum-size screen. Resize to inspect history.
 - Attached workflows reconcile provisional runtime events with authoritative persistence every second and on `r`. History from other processes is readable, but Ariadne does not reattach to their operating-system processes after restart.
 - Runtime events are in-memory responsiveness hints. Slow subscribers may lose old output and receive a sequence-gap warning; full output remains only in artifact files.
 - Only one active batch is permitted per TUI process. Confirmed `q` detachment is headless continuation in the same foreground process, not a daemon; the shell remains occupied.
 - Log previews load only the final 64 KiB, discard an initial partial line, sanitize terminal controls, and refuse binary-looking, unreadable, missing, or project-external paths. Full artifacts remain available by their safe project-relative paths.
+- Change-diff browsing is intentionally bounded: v2 artifacts stop at 8 MiB or 1,000 hunks and viewer requests return at most 64 KiB/400 lines. V1 browsing falls back to its historical bounded whole-result preview. Search is not implemented; use safe patch export for the complete captured patch.
 - Screen-reader behavior depends on Ink and the terminal. Plain status labels and monochrome mode preserve meaning, but interactive terminal accessibility varies by platform.
 
 ## Execution, concurrency, and retries
@@ -45,8 +46,11 @@
 
 - Apply supports only the same Git repository, a clean named branch, and surviving Ariadne result commits. It performs no stash, automatic merge, push, or remote operation.
 - Preflight catches Git cherry-pick conflicts visible in the temporary worktree. External side effects and platform-specific mode/symlink behavior remain outside the transaction.
-- An unexpected real-checkout conflict is aborted best effort. Ariadne refuses unrelated/incompletely owned Git operations rather than assuming recovery authority.
+- Conflict preflight is an estimate, not a guarantee. There is no merge editor, interactive conflict resolution, or automatic merge.
+- An unexpected real-checkout conflict is aborted and verified best effort. Ariadne refuses unrelated/incompletely owned Git operations rather than assuming recovery authority. Rollback verification failure requires the displayed manual recovery commands.
 - Discard deletes managed refs and retained worktrees, not immutable manifests, reports, safe patches, Git reflogs, or immediately unreachable Git objects.
+- Binary content is metadata-only. Exported patches can differ operationally from Git-native result-ref promotion, especially for binary, symlink, executable-mode, rename/copy, and platform-dependent behavior.
+- Secret detection is best effort beyond configured forbidden paths and tested high-confidence filenames. Sensitive-path omission prevents known content from diff/export artifacts but cannot classify every secret.
 
 ## Historical records
 

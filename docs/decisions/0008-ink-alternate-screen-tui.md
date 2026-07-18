@@ -4,7 +4,7 @@
 
 Accepted.
 
-The inspection-only scope was extended by [ADR 0009](./0009-operational-tui-runtime-events.md). The Ink, visual, responsive, and terminal-ownership decisions here remain in force.
+The inspection-only scope was extended by [ADR 0009](./0009-operational-tui-runtime-events.md) and the local review/management scope by [ADR 0010](./0010-change-review-application-services.md). The Ink, visual, responsive, and terminal-ownership decisions here remain in force.
 
 ## Context
 
@@ -27,4 +27,4 @@ The persisted readers, report models, workspace metadata, promotion records, and
 
 The visual design consumes shared semantic tokens with sentence-case typography, textual status labels, restrained symbols, windowed lists, and responsive rounded Coral line frames rather than theatrical system copy or CRT simulation. Adjacent panes use zero-cell gutters to keep the dashboard dense; ASCII fallback remains square. Cyan identifies selection and running work, Green identifies success, Coral identifies frames and failure, Orange identifies caution, and Slate separates metadata. The interface does not animate or continuously redraw. Components are deterministic enough for fixed-viewport string rendering and terminal-stream tests. A normal quit, initialization/render failure, SIGINT, or SIGTERM runs the same idempotent restoration path.
 
-Upgrading to Ink 7 is a deliberate Node-support decision, not an incidental dependency update. Full logs and external actions stay outside the TUI.
+Upgrading to Ink 7 is a deliberate Node-support decision, not an incidental dependency update. Full logs, remote execution, and unreviewed source-control actions stay outside the TUI.

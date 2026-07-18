@@ -132,6 +132,7 @@ ariadne report --batch <batch-id-or-path> --output reports/workflow.html
 ariadne tui
 ariadne changes <run-id>
 ariadne diff <run-id> --output exports/result.patch
+ariadne diff <run-id> --output exports/result.patch --force
 ariadne status <run-id>
 ariadne apply <run-id>
 ariadne discard <run-id>
@@ -140,7 +141,7 @@ ariadne worktree clean --dry-run
 
 `run` with no selectors remains equivalent to `--all`. `plan` is read-only: it creates no run or batch record and launches no processes. `list` defaults to child task attempts. `report` follows `.ariadne/latest.json` by default. Existing list format flags remain aliases. See [the CLI contract](./docs/cli-contract.md) for selection rules and exit codes.
 
-`tui` opens a keyboard-first workflow control surface over the same planner, scheduler, compatibility readers, and canonical report models as the CLI. Press `p` to select tasks, review the dependency-expanded plan, edit concurrency/failure/isolation/dirty-base options, explicitly confirm launch, and monitor per-process stdout/stderr. Attached in-process workflows can be cancelled, resumed, or rerun from history; persisted running/incomplete records from another or restarted process are labeled `no active runtime attached`. Redirected use exits 2 without ANSI output. `--verbose`, `--no-color`, `NO_COLOR`, ASCII fallback, responsive `100/60/40` layouts, contextual `?` help, and `r` reconciliation remain supported. Promotion, discard, cleanup, remote execution, and mouse-first behavior remain outside the TUI. See [Ariadne TUI](./docs/tui.md).
+`tui` opens a keyboard-first workflow control surface over the same planner, scheduler, review services, compatibility readers, and canonical report models as the CLI. Press `p` to plan and run work; use Tab on the dashboard to select attention categories and review results or retained workspaces. Result detail supports bounded per-file diffs, retry comparison, safe patch export, eligibility/preflight review, explicit apply/discard confirmation, and conflict diagnostics. Workspace detail supports pure cleanup previews followed by selected or bulk confirmed cleanup. Attached in-process workflows can still be cancelled, resumed, or rerun from history; persisted running/incomplete records from another or restarted process are labeled `no active runtime attached`. Redirected use exits 2 without ANSI output. `--verbose`, `--no-color`, `NO_COLOR`, ASCII fallback, responsive `100/60/40` layouts, contextual `?` help, and `r` reconciliation remain supported. Remote execution and mouse-first behavior remain out of scope. See [Ariadne TUI](./docs/tui.md).
 
 ## Records and reports
 
@@ -154,6 +155,8 @@ ariadne worktree clean --dry-run
 │       └── report.html
 ├── worktrees/<workspace-id>/workspace.json
 ├── promotions/<promotion-id>.json
+├── actions/<action-id>.json
+├── exports/<task>-<short-run>.patch
 └── runs/
     ├── latest.json
     └── <run-id>/
@@ -162,7 +165,7 @@ ariadne worktree clean --dry-run
         └── artifacts/<task-id>/...
 ```
 
-A batch references child attempt manifests instead of duplicating process traces. Run record v4 adds workspace, prepared/source/result revisions, change artifacts, applicability, cleanup, and workflow linkage. Batch record v2 stores isolation and result references. Workspace v1 and promotion v1 records remain separate so execution history is immutable. Historical v1–v3 runs and v1 batches remain read-only compatible.
+A batch references child attempt manifests instead of duplicating process traces. Run record v4 adds workspace, prepared/source/result revisions, change artifacts, applicability, cleanup, and workflow linkage. Batch record v2 stores isolation and result references. Change-artifact v2 stores stable per-file identities, object/mode/symlink metadata, and bounded hashed text-diff artifacts. Promotion-record v2 stores structured conflicts, rollback state, and manual-recovery instructions. Management-action v1 records patch export and workspace cleanup outcomes. V1 change/promotion artifacts are normalized on read and never rewritten; execution and batch history remain immutable.
 
 Manifest writes use a same-directory temporary file, sync, atomic rename, and best-effort directory sync. Latest pointers update only after valid terminal manifests exist. Raw stdout/stderr bytes stream to artifacts; manifests retain bounded 4 KiB head and 12 KiB tail previews.
 
@@ -170,7 +173,7 @@ Manifest writes use a same-directory temporary file, sync, atomic rename, and be
 
 Shared mode is the compatibility default. Mutable tasks run alone; read-only tasks may overlap and fail `workspace.read-only` if Git-visible mutation occurs. Worktree mode creates detached checkouts from committed `HEAD`, layers successful dependency result commits, and permits isolated mutable overlap up to `execution.concurrency`.
 
-Successful safe changes are committed under `refs/ariadne/results/<run-id>`. `changes` and `diff` are inspection commands. `apply` requires the same repository, a clean named branch, an eligible unapplied result, and surviving refs. It preflights the unresolved dependency closure in a temporary worktree, creates one squashed commit, then cherry-picks it into the unchanged primary checkout. `discard` removes only managed refs/worktrees; manifests and artifacts remain.
+Successful safe changes are committed under `refs/ariadne/results/<run-id>`. `changes` and `diff` are inspection commands; patch export is no-clobber unless the CLI receives explicit `--force`. Only standalone runs and final workflow attempts can be promoted. `apply` requires the same repository, a clean named branch, an eligible unapplied result, surviving refs, and a fresh preview fingerprint. It preflights the unresolved dependency closure in a temporary worktree, creates one squashed commit, then cherry-picks it into the unchanged primary checkout. Conflicts are aborted and verified; failed abort verification is recorded with manual recovery commands. `discard` removes only managed refs and eligible retained worktrees; manifests, artifacts, reports, patches, and action history remain.
 
 Git worktrees isolate repository state, not operating-system permissions, external paths, services, caches, network access, credentials, or arbitrary subprocess side effects. Dirty-source acknowledgement uses committed `HEAD` only and records excluded primary dirt. Secret omission and log redaction are best effort beyond configured forbidden files and tested `.env` paths.
 

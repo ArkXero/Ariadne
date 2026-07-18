@@ -75,6 +75,42 @@ def main() -> int:
         return wait_for(expected, after)
 
     try:
+        if os.environ.get("ARIADNE_PTY_MODE") == "review":
+            cursor = wait_for(b"Dashboard")
+            cursor = send(b"\t", b"Needs attention", cursor)
+            cursor = send(b"\r", b"Results", cursor)
+            cursor = send(b"\r", b"Result summary", cursor)
+            cursor = send(b"\r", b"Changed files", cursor)
+            cursor = send(b"\r", b"Diff", cursor)
+            cursor = send(b"\x1b", b"Changed files", cursor)
+            cursor = send(b"\x1b", b"Result summary", cursor)
+            cursor = send(b"a", b"Apply eligibility", cursor)
+            cursor = send(b"\r", b"Apply preview", cursor)
+            cursor = send(b"\r", b"Apply confirmation", cursor)
+            cursor = send(b"\x1b", b"Apply preview", cursor)
+            cursor = send(b"\x1b", b"Apply eligibility", cursor)
+            cursor = send(b"\x1b", b"Result summary", cursor)
+            cursor = send(b"x", b"Discard preview", cursor)
+            cursor = send(b"\r", b"Discard confirmation", cursor)
+            cursor = send(b"\x1b", b"Discard preview", cursor)
+            os.write(master, b"q")
+            deadline = time.monotonic() + 10.0
+            while child.poll() is None and time.monotonic() < deadline:
+                read_available()
+            if child.poll() is None:
+                raise RuntimeError("PTY review workflow did not tear down within 10 seconds")
+            while True:
+                before = len(output)
+                read_available(0)
+                if len(output) == before:
+                    break
+            if child.returncode != 0:
+                raise RuntimeError(f"PTY review child exited {child.returncode}")
+            if b"\x1b[?1049h" not in output or b"\x1b[?1049l" not in output:
+                raise RuntimeError("review alternate-screen entry/restoration was not observed")
+            print("TUI PTY review smoke passed: attention, result, manifest, diff, apply cancellation, discard cancellation, teardown.")
+            return 0
+
         cursor = wait_for(b"Dashboard")
         cursor = send(b"p", b"Select tasks", cursor)
         wait_for_quiet()

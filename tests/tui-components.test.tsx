@@ -40,9 +40,9 @@ function fixture(): { snapshot: TuiSnapshot; detail: AttemptDetail } {
     resultStates: { r1: "unapplied" }
   } as unknown as BatchHistoryEntry;
   const snapshot: TuiSnapshot = {
-    loadedAt: "2026-07-16T00:00:03.000Z", configuration: "available", batches: [batch], tasks: [task], workspaces: [], promotions: [],
+    loadedAt: "2026-07-16T00:00:03.000Z", configuration: "available", batches: [batch], tasks: [task], workspaces: [], promotions: [], results: [], workspaceDetails: [],
     warnings: [{ id: "warning:0", code: "missing-artifact", message: "Missing <script> artifact", path: ".ariadne/log.txt" }],
-    attention: { unappliedResults: 1, retainedWorktrees: 1, failedWorkflows: 1, warnings: 1 }
+    attention: { unappliedResults: 1, conflictedResults: 0, applicationFailures: 0, ineligibleResults: 0, missingOrCorruptResults: 0, retainedWorktrees: 1, staleWorktrees: 0, cleanupFailures: 0, failedWorkflows: 1, warnings: 1 }
   };
   const process = {
     command: "node agent.mjs", status: "passed", exitCode: 0, signal: null, durationMs: 200,

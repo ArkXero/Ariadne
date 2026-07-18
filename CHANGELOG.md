@@ -4,6 +4,10 @@
 
 ### Added
 
+- Change review and promotion in `ariadne tui`: selectable attention categories, filtered results, result/manifest detail, bounded per-file diffs, retry comparison, eligibility/preflight/fingerprint review, elevated-risk acknowledgement, apply/discard confirmation, structured conflict/recovery display, safe patch export, and workspace cleanup previews/execution.
+- Shared change/workspace application services, an exclusive management lock, change-artifact v2 stable IDs/object/symlink/mode/copy/rename metadata and hashed text diffs, promotion-record v2 structured failure/rollback data, and management-action v1 export/cleanup history.
+- Opaque diff paging limited to 64 KiB and 400 parsed lines per request, 8 MiB/1,000-hunk capture bounds, binary/sensitive metadata-only handling, final-attempt promotion eligibility, idempotent discard, pure cleanup dry runs, and no-clobber exports with CLI `diff --force` opt-in.
+- Disposable service and Ink keyboard tests for large/special/hostile results, exports, retries, apply acknowledgement, discard, and workspace cleanup.
 - Operational `ariadne tui` planning, task selection, option editing, explicit launch confirmation, live task/process/output monitoring, cancellation confirmation/progress, dashboard detach/reopen, and confirmed headless continuation.
 - Shared workflow inspection/preview/launch services for CLI and TUI, typed in-memory runtime events, bounded asynchronous subscriptions, redacted UTF-8 process streaming, one-active-workflow registry, persistence reconciliation, and idempotent cancellation handles.
 - Resume and failed/failed-branch/all-root rerun previews in workflow history, with current-configuration replanning and immutable source records.
@@ -18,7 +22,7 @@
 - Safe existing-config validation and replacement with mandatory diffs, disposable proposal validation, ignored timestamped backups, atomic writes, and rollback.
 - Configuration v4 with shared/worktree isolation, task workspace modes, retention, and bounded workspace preparation.
 - Managed detached worktrees, fresh retry workspaces, deterministic dependency-result layering, and primary-checkout mutation guards.
-- Run record v4, batch record v2, workspace/change/promotion v1 records, durable local result refs, safe patches, and separate immutable promotion events.
+- Run record v4, batch record v2, workspace v1/change v1/promotion v1 records, durable local result refs, safe patches, and separate immutable promotion events.
 - `changes`, `diff`, `status`, `apply`, `discard`, and guarded worktree inspection/cleanup commands.
 - Transactional dependency-closure promotion through a temporary preflight worktree and one squashed primary-checkout commit.
 - Best-effort streaming log redaction plus mandatory omission of configured forbidden and tested `.env` paths from result commits and patches.
@@ -38,6 +42,8 @@
 
 ### Changed
 
+- Existing change-artifact v1 and promotion-record v1 history is normalized on read without rewriting; new captures/events use v2. CLI change, diff, discard, and worktree commands now delegate through the shared review services while preserving machine-output contracts.
+- TUI quit/Ctrl-C during review mutations now requests interruption, keeps duplicate actions locked until safe recovery, and restores the terminal only after the service settles.
 - The TUI is now a keyboard-first local workflow control surface rather than inspection-only. Coral frames/full-viewport layout, bold Cyan `>` focus, rounded zero-gutter panes, ASCII fallback, and `100/60/40` responsiveness remain unchanged.
 - Attached runtime state reconciles from persistence every second, on manual refresh, and on completion; durable records remain authoritative and schemas remain compatible.
 - SIGINT/SIGTERM in the TUI request active cancellation and wait a configuration-derived bounded finalization interval before terminal restoration. Confirmed `q` detachment restores immediately and keeps the foreground process alive until completion.

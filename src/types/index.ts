@@ -2,7 +2,9 @@ export const CURRENT_CONFIG_VERSION = 4 as const;
 export const CURRENT_RUN_SCHEMA_VERSION = 4 as const;
 export const CURRENT_BATCH_SCHEMA_VERSION = 2 as const;
 export const CURRENT_WORKSPACE_SCHEMA_VERSION = 1 as const;
-export const CURRENT_PROMOTION_SCHEMA_VERSION = 1 as const;
+export const CURRENT_PROMOTION_SCHEMA_VERSION = 2 as const;
+export const CURRENT_CHANGE_ARTIFACT_SCHEMA_VERSION = 2 as const;
+export const CURRENT_MANAGEMENT_ACTION_SCHEMA_VERSION = 1 as const;
 
 export type LegacyConfigVersion = "versionless" | 1 | 2 | 3;
 export type IsolationStrategy = "shared" | "worktree";
@@ -300,6 +302,7 @@ export interface SensitivePathEvidence {
 }
 
 export interface CapturedChange {
+  changeId?: string;
   path: string;
   originalPath?: string;
   changeType: RepositoryChangeType;
@@ -308,10 +311,33 @@ export interface CapturedChange {
   binary: boolean;
   mode?: string;
   kind?: RepositoryEntry["kind"];
+  old?: CapturedObjectMetadata;
+  new?: CapturedObjectMetadata;
+  similarity?: number;
+  diff?: CapturedDiffMetadata;
+}
+
+export interface CapturedObjectMetadata {
+  path: string;
+  mode?: string;
+  kind?: RepositoryEntry["kind"];
+  size?: number;
+  objectId?: string;
+  symlinkTarget?: string;
+}
+
+export interface CapturedDiffMetadata {
+  status: "text" | "binary" | "metadata-only" | "unavailable";
+  artifact?: string;
+  bytes: number;
+  lines: number;
+  hunks: number;
+  sha256?: string;
+  reason?: string;
 }
 
 export interface ChangeArtifact {
-  schemaVersion: 1;
+  schemaVersion: 1 | typeof CURRENT_CHANGE_ARTIFACT_SCHEMA_VERSION;
   state: "captured" | "empty" | "incomplete";
   sourceRevision: string;
   preparedRevision: string;
@@ -676,8 +702,24 @@ export interface WorkspaceRecord {
 
 export type PromotionStatus = "validating" | "preflighting" | "applying" | "succeeded" | "conflicted" | "discarded" | "interrupted" | "failed";
 
+export interface PromotionConflict {
+  path: string;
+  category: "content" | "modify-delete" | "rename" | "binary" | "unknown";
+}
+
+export interface PromotionFailure {
+  category: "ineligible" | "dirty-target" | "wrong-repository" | "already-applied" | "missing-artifact" | "missing-result" | "conflict" | "git" | "interrupted" | "cleanup" | "persistence" | "stale-preview" | "unknown";
+  code: string;
+  message: string;
+  targetModified: boolean;
+  rollbackAttempted: boolean;
+  rollbackSucceeded?: boolean;
+  manualRecoveryRequired: boolean;
+  recoveryCommands: string[];
+}
+
 export interface PromotionRecord {
-  schemaVersion: typeof CURRENT_PROMOTION_SCHEMA_VERSION;
+  schemaVersion: 1 | typeof CURRENT_PROMOTION_SCHEMA_VERSION;
   promotionId: string;
   kind: "apply" | "discard";
   status: PromotionStatus;
@@ -696,5 +738,27 @@ export interface PromotionRecord {
   owner: RunOwner;
   lifecycle: Array<{ status: PromotionStatus; at: string; detail?: string }>;
   cleanup?: { preflightPath?: string; removed?: boolean; error?: string };
+  conflicts?: PromotionConflict[];
+  failure?: PromotionFailure;
+  discard?: { resultRefRemoved: boolean; workspaceId?: string; workspaceState?: WorkspaceState; historyPreserved: true };
+  error?: string;
+}
+
+export type ManagementActionStatus = "running" | "succeeded" | "partial" | "failed" | "interrupted";
+
+export interface ManagementActionRecord {
+  schemaVersion: typeof CURRENT_MANAGEMENT_ACTION_SCHEMA_VERSION;
+  actionId: string;
+  kind: "patch-export" | "workspace-cleanup";
+  status: ManagementActionStatus;
+  repositoryId: string;
+  startedAt: string;
+  completedAt: string;
+  owner: RunOwner;
+  runId?: string;
+  workspaceIds: string[];
+  destination?: string;
+  bytes?: number;
+  outcomes: Array<{ resourceId: string; status: "succeeded" | "skipped" | "failed"; detail: string }>;
   error?: string;
 }

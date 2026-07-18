@@ -25,7 +25,7 @@ export type TuiAction =
 
 export function initialTuiState(): TuiState {
   return {
-    screen: { kind: "dashboard", selection: 0 },
+    screen: { kind: "dashboard", selection: 0, focus: "workflows" },
     backStack: [],
     snapshotRequest: { generation: 0, loading: false },
     attempts: {},
@@ -52,7 +52,7 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       return { ...state, backStack: [], screen: { kind: "dashboard", selection: 0 } };
     case "back": {
       const previous = state.backStack.at(-1);
-      return previous ? { ...state, screen: previous, backStack: state.backStack.slice(0, -1) } : { ...state, screen: { kind: "dashboard", selection: 0 } };
+      return previous ? { ...state, screen: previous, backStack: state.backStack.slice(0, -1) } : { ...state, screen: { kind: "dashboard", selection: 0, focus: "workflows" } };
     }
     case "move":
       return { ...state, screen: withSelection(state.screen, action.selection) };

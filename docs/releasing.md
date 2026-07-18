@@ -14,9 +14,9 @@
    ```
 
 5. Inspect tarball contents for stale `dist`, source/tests/scripts, credentials, absolute personal paths, and missing shebang/bin metadata.
-6. Inspect generated run v4, batch v2, workspace v1, change v1, and promotion v1 records plus offline HTML for schema drift, link consistency, unsafe paths, hostile-content escaping, and accidental secret/path inclusion.
-7. Verify versionless/v1/v2/v3 config, v1/v2/v3 run, and v1 batch compatibility readers without rewriting history.
-8. Exercise shared/worktree planning, dependency layering, retry, interruption, resume/rerun, changes/diff, clean apply, conflict, discard, and cleanup from the installed tarball outside the checkout.
+6. Inspect generated run v4, batch v2, workspace v1, change-artifact v2, promotion-record v2, and management-action v1 records plus offline HTML for schema drift, link consistency, unsafe paths, hostile-content escaping, and accidental secret/path inclusion.
+7. Verify versionless/v1/v2/v3 config, v1/v2/v3 run, v1 batch, v1 change-artifact, and v1 promotion compatibility readers without rewriting history.
+8. Exercise shared/worktree planning, dependency layering, retries, result browsing, bounded diffs, comparison, safe export and collision, clean apply, target advancement, conflict rollback, idempotent discard, cleanup dry-run/selected/bulk/partial failure, interruption, resume/rerun, non-TTY refusal, and terminal restoration from the installed tarball outside the checkout.
 9. Tag and publish only after the Ubuntu Node 20/22/24 and macOS/Windows Node 22 CI matrix succeeds.
 
 The package build always removes `dist` first. Do not publish from a build path that bypasses `pnpm build` and `pnpm test:package`.

@@ -201,6 +201,19 @@ export async function removeWorkspace(projectRoot: string, record: WorkspaceReco
       await transitionWorkspace(projectRoot, record, "retained", "Cleanup failed; workspace retained.");
       return record;
     }
+  } else if (await fs.pathExists(checkout)) {
+    try {
+      await fs.remove(checkout);
+    } catch (error) {
+      record.cleanupError = error instanceof Error ? error.message : String(error);
+      await transitionWorkspace(projectRoot, record, "retained", "Unregistered managed checkout could not be removed; workspace retained.");
+      return record;
+    }
+  }
+  if (await fs.pathExists(checkout)) {
+    record.cleanupError = "Managed checkout still exists after cleanup.";
+    await transitionWorkspace(projectRoot, record, "retained", "Cleanup verification failed; workspace retained.");
+    return record;
   }
   record.cleanupAt = new Date().toISOString();
   await transitionWorkspace(projectRoot, record, "removed", "Managed checkout removed.");
