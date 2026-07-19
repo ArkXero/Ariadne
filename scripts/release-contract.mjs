@@ -12,11 +12,14 @@ function assert(condition, message) {
 }
 
 function run(file, args) {
-  const result = spawnSync(file, args, {
+  const windowsShim = process.platform === "win32" && (["npm", "pnpm", "corepack"].includes(file) || /\.(?:cmd|bat)$/i.test(file));
+  const executable = windowsShim && /\s/.test(file) ? `"${file}"` : file;
+  const result = spawnSync(executable, args, {
     cwd: repoRoot,
     encoding: "utf8",
     env: { ...process.env, NO_COLOR: "1" },
-    maxBuffer: 20 * 1024 * 1024
+    maxBuffer: 20 * 1024 * 1024,
+    shell: windowsShim
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
