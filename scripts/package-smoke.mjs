@@ -177,7 +177,10 @@ try {
   assert(version === installedPackage.version, `Installed CLI version ${version} does not match package ${installedPackage.version}`);
   assert(run(process.execPath, [installedCli, "--version"], installRoot).stdout.trim() === version, "Direct installed CLI invocation returned the wrong version.");
 
-  const globalRoot = path.join(temporaryRoot, "npm global prefix");
+  // npm's generated global Windows shim cannot resolve its package target when
+  // the --prefix directory contains spaces. Local npm and pnpm installs above
+  // still exercise the packaged binary from spaced and Unicode paths.
+  const globalRoot = path.join(temporaryRoot, process.platform === "win32" ? "npm-global-prefix" : "npm global prefix");
   run("npm", ["install", "--global", "--prefix", globalRoot, "--ignore-scripts", tarball], temporaryRoot);
   const globalBinary = process.platform === "win32" ? path.join(globalRoot, "ariadne.cmd") : path.join(globalRoot, "bin", "ariadne");
   assert(run(globalBinary, ["--version"], temporaryRoot).stdout.trim() === version, "npm global tarball installation returned the wrong version.");
