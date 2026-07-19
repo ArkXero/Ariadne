@@ -97,10 +97,11 @@ function taskIdForCommand(command: DetectedCommand, used: Set<string>): string {
 
 function generatedConfig(settings: InitSettings, validationCommand?: DetectedCommand): string {
   const config = {
-    version: 4,
+    version: 5,
     agent: {
       command: settings.agent,
-      timeout_ms: settings.timeoutMinutes * 60_000
+      timeout_ms: settings.timeoutMinutes * 60_000,
+      model_label: "local-agent"
     },
     tasks: { directory: TASKS_DIRECTORY },
     verification: {

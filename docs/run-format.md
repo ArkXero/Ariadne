@@ -1,14 +1,14 @@
 # Record Formats
 
-## Task run record v4
+## Task run record v5
 
-Every task attempt owns `.ariadne/runs/<run-id>/run.json`. Run record v4 retains prior execution evidence and adds a workspace reference, source/prepared/result revisions, inherited results, preparation processes, retention/cleanup, and a change-artifact reference. Its optional `workflow` link records batch, plan, task, and globally increasing attempt number.
+Every task attempt owns `.ariadne/runs/<run-id>/run.json`. Run record v5 retains prior execution evidence and adds an optional professional benchmark result to the task result. That result records execution outcome, policy score, raw/effective benchmark scores, qualification, applied failure policy, candidate/judge labels, benchmark/context/packet fingerprints, judge explanation/evidence, packet omissions, and judge process artifacts. Its optional `workflow` link records batch, plan, task, and globally increasing attempt number.
 
 Full stdout/stderr bytes remain in artifact files. Manifests keep bounded head/tail previews, byte counts, UTF-8 replacement metadata, and spawn/exit/signal/timeout/interruption/cleanup distinctions. Prompt text and environment values are omitted; prompt length and SHA-256 are stored.
 
-Run readers preserve v1 flat-file and v2/v3 directory compatibility without rewriting history. Missing artifacts become warnings. Malformed and future records are skipped by history and explained by explicit reports.
+Run readers preserve v1 flat-file and v2/v3/v4 directory compatibility without rewriting history. Missing artifacts become warnings. Malformed and future records are skipped by history and explained by explicit reports.
 
-## Batch record v2
+## Batch record v3
 
 Each invocation owns `.ariadne/batches/<batch-id>/batch.json`. The record includes:
 
@@ -17,8 +17,9 @@ Each invocation owns `.ariadne/batches/<batch-id>/batch.json`. The record includ
 - effective concurrency, failure mode, isolation, workspace mode, retention, verification, retry, and dependency-result settings;
 - task states, all child attempt references, retry decisions, block/skip evidence, and relation to a resumed/rerun source;
 - owner, repository HEAD, lifecycle checkpoints, warnings, failures, aggregate counts, and score summary.
+- the complete optional benchmark result for a `benchmark` invocation, without replacing the batch execution outcome or policy-score summary.
 
-The batch never duplicates child traces or logs. Batch score is the arithmetic mean of final-attempt policy scores for launched tasks; blocked/skipped tasks are excluded and score never determines status.
+The batch never duplicates child traces or logs. Batch score is the arithmetic mean of final-attempt policy scores for launched tasks; blocked/skipped tasks are excluded and score never determines status. A disqualified benchmark has no effective numeric score. Judge failure is represented inside the benchmark result and does not rewrite the underlying task or batch outcome.
 
 Task states are `pending`, `ready`, `running`, `retry_wait`, `succeeded`, `failed`, `blocked`, `skipped`, `interrupted`, and `incomplete`. Terminal batch statuses are `succeeded`, `succeeded_with_warnings`, `partially_failed`, `failed`, `interrupted`, and `incomplete`; readers may derive `abandoned` for a dead same-host owner.
 

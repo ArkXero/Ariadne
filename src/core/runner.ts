@@ -139,6 +139,10 @@ function sanitizeConfig(config: AriadneConfig): AriadneConfig {
   return {
     ...config,
     agent: { ...config.agent, command: sanitize(config.agent.command) },
+    ...(config.benchmarking ? { benchmarking: {
+      ...config.benchmarking,
+      judge: { ...config.benchmarking.judge, command: sanitize(config.benchmarking.judge.command) }
+    } } : {}),
     verification: { ...config.verification, commands: config.verification.commands.map(sanitize) },
     execution: {
       ...config.execution,

@@ -148,7 +148,7 @@ describe("init repository detection and proposals", () => {
     expect(result.backup).toMatch(/^ariadne\.yml\.backup-/);
     expect(await readFile(path.join(cwd, result.backup!), "utf8")).toBe(original);
     expect(await readFile(path.join(cwd, ".ariadne", "tasks", "custom.yml"), "utf8")).toContain("Preserve me");
-    expect((await loadConfig(cwd)).config.version).toBe(4);
+    expect((await loadConfig(cwd)).config.version).toBe(5);
   });
 
   it("does not mutate any existing file in non-interactive idempotent mode", async () => {

@@ -9,6 +9,27 @@ import { cleanupTempDirs, tempDir, writeProject } from "./helpers.js";
 
 afterEach(cleanupTempDirs);
 
+const completeRubric = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  .map((anchor) => `    ${anchor}: ${anchor} point quality`)
+  .join("\n");
+
+function benchmarkTask(rubric = completeRubric): string {
+  return `id: bench
+prompt: Improve the project.
+benchmark:
+  version: 1
+  id: typescript-cli-quality
+  rubric:
+${rubric}
+  context_files: [README.md]
+  failure_policy:
+    agent_failed: zero
+    verification_failed: keep
+    timeout: {cap: 20}
+    policy_failed: disqualify
+`;
+}
+
 describe("configuration contracts", () => {
   it("loads strict v4 isolation, retention, preparation, and workspace-mode fields", async () => {
     const cwd = await tempDir();
@@ -30,12 +51,12 @@ execution:
     expect(tasks[0]).toMatchObject({ workspaceMode: "read-only" });
   });
 
-  it("adapts strict v2 config to v4 workflow defaults", async () => {
+  it("adapts strict v2 config to v5 workflow defaults", async () => {
     const cwd = await tempDir();
     await mkdir(path.join(cwd, ".ariadne", "tasks"), { recursive: true });
     await writeFile(path.join(cwd, "ariadne.yml"), "version: 2\nagent:\n  command:\n    kind: exec\n    file: node\n");
     const loaded = await loadConfig(cwd);
-    expect(loaded.config).toMatchObject({ version: 4, sourceVersion: 2, agent: { timeout_ms: 600_000 }, execution: { termination_grace_ms: 2_000, concurrency: 1, failure_mode: "continue", isolation: "shared" } });
+    expect(loaded.config).toMatchObject({ version: 5, sourceVersion: 2, agent: { timeout_ms: 600_000 }, execution: { termination_grace_ms: 2_000, concurrency: 1, failure_mode: "continue", isolation: "shared" } });
     expect(loaded.warnings[0]).toContain("version 2");
     expect(Object.isFrozen(loaded.config)).toBe(true);
     expect(Object.isFrozen(loaded.config.agent)).toBe(true);
@@ -75,12 +96,13 @@ execution:
     await expect(loadConfig(cwd, "../ariadne.yml")).rejects.toThrow("inside the invocation root");
   });
 
-  it("init writes a valid portable v4 config and remains idempotent", async () => {
+  it("init writes a valid portable v5 config and remains idempotent", async () => {
     const cwd = await tempDir();
     expect((await initCommand(cwd)).config).toBe("created");
     expect((await initCommand(cwd)).config).toBe("skipped");
     const loaded = await loadConfig(cwd);
-    expect(loaded.config.version).toBe(4);
+    expect(loaded.config.version).toBe(5);
+    expect(loaded.config.agent.model_label).toBe("local-agent");
     expect(loaded.config.agent.command).toMatchObject({ kind: "exec", file: "node" });
     expect(await readFile(path.join(cwd, ".gitignore"), "utf8")).toContain("/.ariadne/");
   });
@@ -109,6 +131,34 @@ execution:
 });
 
 describe("task contracts", () => {
+  it("loads the complete v5 benchmark rubric and every failure-policy action", async () => {
+    const cwd = await tempDir();
+    await mkdir(path.join(cwd, "tasks"));
+    await writeFile(path.join(cwd, "tasks", "bench.yml"), benchmarkTask());
+    const [task] = await loadTasks(cwd, "tasks", 5);
+    expect(Object.keys(task!.benchmark!.rubric)).toEqual(["0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100"]);
+    expect(task!.benchmark!.failure_policy).toEqual({ agent_failed: "zero", verification_failed: "keep", timeout: { cap: 20 }, policy_failed: "disqualify" });
+  });
+
+  it.each([
+    ["incomplete rubric", completeRubric.replace("    100: 100 point quality", ""), "rubric.100"],
+    ["invalid anchor", `${completeRubric}\n    55: invented`, "Unrecognized key"],
+    ["duplicate anchor", `${completeRubric}\n    60: duplicate`, "Map keys must be unique"],
+    ["empty description", completeRubric.replace("    60: 60 point quality", "    60: ' '"), "must not be empty"]
+  ])("rejects a benchmark with %s", async (_name, rubric, message) => {
+    const cwd = await tempDir();
+    await mkdir(path.join(cwd, "tasks"));
+    await writeFile(path.join(cwd, "tasks", "bench.yml"), benchmarkTask(rubric));
+    await expect(loadTasks(cwd, "tasks", 5)).rejects.toThrow(message);
+  });
+
+  it("rejects benchmark context traversal before execution", async () => {
+    const cwd = await tempDir();
+    await mkdir(path.join(cwd, "tasks"));
+    await writeFile(path.join(cwd, "tasks", "bench.yml"), benchmarkTask().replace("[README.md]", "[../README.md]"));
+    await expect(loadTasks(cwd, "tasks", 5)).rejects.toThrow("inside the project root");
+  });
+
   it("loads recursive tasks deterministically with filename fallback", async () => {
     const cwd = await tempDir();
     const tasks = path.join(cwd, "tasks");

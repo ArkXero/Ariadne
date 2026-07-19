@@ -69,9 +69,9 @@ function workspace(index) {
 
 function workflowConfig() {
   return {
-    version: 4,
-    sourceVersion: 4,
-    agent: { command: { kind: "exec", file: "node", args: ["agent.mjs"] }, timeout_ms: 1_000 },
+    version: 5,
+    sourceVersion: 5,
+    agent: { command: { kind: "exec", file: "node", args: ["agent.mjs"] }, timeout_ms: 1_000, model_label: "release-profile-agent" },
     tasks: { directory: ".ariadne/tasks" },
     verification: { commands: [], timeout_ms: 1_000 },
     execution: {

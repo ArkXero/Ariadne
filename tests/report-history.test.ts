@@ -73,6 +73,25 @@ describe("canonical reports", () => {
     expect(loaded.ok && loaded.warnings.join(" ")).toContain("version 2");
   });
 
+  it("loads historical v4 records without inventing benchmark results or rewriting history", async () => {
+    const cwd = await tempDir();
+    await writeProject(cwd);
+    const run = await runAriadne({ cwd });
+    const raw = JSON.parse(await readFile(run.outputPath, "utf8"));
+    raw.schemaVersion = 4;
+    raw.config.version = 4;
+    raw.config.execution.isolation = "worktree";
+    raw.config.execution.worktree.retention = "always";
+    await writeFile(run.outputPath, JSON.stringify(raw));
+    const before = await readFile(run.outputPath, "utf8");
+    const loaded = await loadRunFile(run.outputPath);
+    expect(loaded.ok && loaded.run.schemaVersion).toBe(4);
+    expect(loaded.ok && "config" in loaded.run && loaded.run.config?.execution).toMatchObject({ isolation: "worktree", worktree: { retention: "always" } });
+    expect(loaded.ok && "results" in loaded.run && loaded.run.results?.[0]).not.toHaveProperty("benchmark");
+    expect(loaded.ok && loaded.warnings.join(" ")).toContain("version 4");
+    expect(await readFile(run.outputPath, "utf8")).toBe(before);
+  });
+
   it("reports missing artifacts as warnings", async () => {
     const cwd = await tempDir();
     await writeProject(cwd);

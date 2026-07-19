@@ -12,7 +12,8 @@ import type {
   RepositoryEntry,
   RunRecord,
   TaskOutcome,
-  PromotionRecord
+  PromotionRecord,
+  BenchmarkResult
 } from "../types/index.js";
 
 export interface ProcessView {
@@ -48,6 +49,7 @@ export interface TaskReportView {
   diffLineCount: number;
   policies: PolicyResult[];
   score: number;
+  benchmark?: BenchmarkResult;
   failures: string[];
   lifecycle: Array<{ stage: string; at: string; detail?: string }>;
   diffArtifact?: string;
@@ -182,6 +184,7 @@ function currentView(run: RunRecord, warnings: string[], manifestPath?: string):
       diffLineCount: result.trace?.diffLineCount ?? 0,
       policies: result.policies,
       score: result.score.value,
+      benchmark: result.benchmark,
       failures: result.failures.map(formatFailureRecord),
       lifecycle: result.lifecycle,
       diffArtifact: result.trace?.diffArtifact
@@ -257,7 +260,7 @@ export function formatRunCompletion(run: RunRecord & { outputPath?: string }): s
   for (const task of model.tasks) {
     const verificationStatuses = [...new Set(task.verification.map((item) => item.status))];
     const verificationStatus = verificationStatuses.length === 0 ? "none" : verificationStatuses.join(", ");
-    lines.push("", `Task: ${task.name}`, `  outcome: ${task.outcome}`, `  agent: ${task.agent?.status ?? "not-run"}`, `  verification: ${verificationStatus}`, `  policy score: ${task.score}`, `  changed files: ${task.changedFiles.length}`, `  diff lines: ${task.diffLineCount}`);
+    lines.push("", `Task: ${task.name}`, `  outcome: ${task.outcome}`, `  agent: ${task.agent?.status ?? "not-run"}`, `  verification: ${verificationStatus}`, `  policy score: ${task.score}`, ...(task.benchmark ? [`  benchmark raw score: ${task.benchmark.rawScore ?? "n/a"}`, `  benchmark effective score: ${task.benchmark.effectiveScore ?? "n/a"}`, `  qualification: ${task.benchmark.qualification}`] : []), `  changed files: ${task.changedFiles.length}`, `  diff lines: ${task.diffLineCount}`);
   }
   for (const warning of model.warnings) lines.push(`Warning: ${warning}`);
   for (const runFailure of model.failures) lines.push(`Failure: ${runFailure}`);
@@ -273,7 +276,7 @@ export function formatTerminalSummary(model: RunReportView): string {
   if (model.promotions.length > 0) lines.push(`Promotions: ${model.promotions.map((item) => `${item.kind}:${item.status}`).join(", ")}`);
   for (const warning of model.warnings) lines.push(`Warning: ${warning}`);
   for (const task of model.tasks) {
-    lines.push("", `${task.outcome.toUpperCase()} ${task.id} - ${task.name}`, `  Agent: ${task.agent?.status ?? "not-run"}`, `  Verification: ${task.verification.map((item) => item.status).join(", ") || "none"}`, `  Policy score: ${task.score}`, `  Changed files: ${task.changedFiles.length}, diff lines: ${task.diffLineCount}`);
+    lines.push("", `${task.outcome.toUpperCase()} ${task.id} - ${task.name}`, `  Agent: ${task.agent?.status ?? "not-run"}`, `  Verification: ${task.verification.map((item) => item.status).join(", ") || "none"}`, `  Policy score: ${task.score}`, ...(task.benchmark ? [`  Benchmark raw score: ${task.benchmark.rawScore ?? "n/a"}`, `  Benchmark effective score: ${task.benchmark.effectiveScore ?? "n/a"}`, `  Qualification: ${task.benchmark.qualification}`, `  Candidate / judge: ${task.benchmark.candidateModel} / ${task.benchmark.judgeModel}`] : []), `  Changed files: ${task.changedFiles.length}, diff lines: ${task.diffLineCount}`);
     for (const failure of task.failures) lines.push(`  ${failure}`);
   }
   return lines.join("\n");
@@ -303,6 +306,7 @@ ${model.promotions.length > 0 ? `<section><h2>Promotion history</h2><table><thea
 ${model.tasks.map((task) => `<article class="card ${task.outcome === "passed" ? "pass" : "fail"}"><h2>${escapeHtml(task.id)} — ${escapeHtml(task.name)}</h2><div class="grid"><div><strong>Outcome</strong>${escapeHtml(task.outcome)}</div><div><strong>Duration</strong>${escapeHtml(duration(task.durationMs))}</div><div><strong>Policy score</strong>${escapeHtml(task.score)}</div><div><strong>Changed files</strong>${escapeHtml(task.changedFiles.length)}</div><div><strong>Diff lines</strong>${escapeHtml(task.diffLineCount)}</div></div>
 <section><h3>Lifecycle</h3><table><thead><tr><th>Stage</th><th>Time</th><th>Detail</th></tr></thead><tbody>${task.lifecycle.map((event) => `<tr><td>${escapeHtml(event.stage)}</td><td>${escapeHtml(event.at)}</td><td>${escapeHtml(event.detail ?? "")}</td></tr>`).join("") || "<tr><td colspan=3>Legacy lifecycle unavailable</td></tr>"}</tbody></table></section>
 ${processHtml("Agent", task.agent)}${task.verification.map((item, index) => processHtml(`Verification ${index + 1}`, item)).join("")}
+${task.benchmark ? `<section><h3>Professional benchmark score</h3><div class="grid"><div><strong>Status</strong>${escapeHtml(task.benchmark.status)}</div><div><strong>Raw score</strong>${escapeHtml(task.benchmark.rawScore ?? "n/a")}</div><div><strong>Effective score</strong>${escapeHtml(task.benchmark.effectiveScore ?? "n/a")}</div><div><strong>Qualification</strong>${escapeHtml(task.benchmark.qualification)}</div></div><dl><dt>Candidate model</dt><dd>${escapeHtml(task.benchmark.candidateModel)}</dd><dt>Judge model</dt><dd>${escapeHtml(task.benchmark.judgeModel)}</dd><dt>Failure policy</dt><dd>${escapeHtml(task.benchmark.failurePolicy ? JSON.stringify(task.benchmark.failurePolicy) : "not applicable")}</dd><dt>Reason</dt><dd>${escapeHtml(task.benchmark.reason ?? task.benchmark.failure?.message ?? "none")}</dd><dt>Benchmark fingerprint</dt><dd><code>${escapeHtml(task.benchmark.fingerprints.benchmark)}</code></dd><dt>Context fingerprint</dt><dd><code>${escapeHtml(task.benchmark.fingerprints.context ?? "unavailable")}</code></dd><dt>Packet fingerprint</dt><dd><code>${escapeHtml(task.benchmark.fingerprints.packet ?? "unavailable")}</code></dd></dl><h4>Judge evidence</h4><pre>${escapeHtml(JSON.stringify(task.benchmark.evidence ?? [], null, 2))}</pre><h4>Packet omissions</h4><pre>${escapeHtml(JSON.stringify(task.benchmark.packet?.omissions ?? [], null, 2))}</pre></section>` : ""}
 <section><h3>Repository changes</h3><h4>Task-attributed changes</h4><table><thead><tr><th>Path</th><th>Change</th><th>Source</th></tr></thead><tbody>${task.changes.map((change) => `<tr><td>${escapeHtml(change.path)}</td><td>${escapeHtml(change.changeType)}</td><td>${escapeHtml(change.source)}</td></tr>`).join("") || "<tr><td colspan=3>None</td></tr>"}</tbody></table><h4>Preexisting baseline dirt</h4><table><thead><tr><th>Path</th><th>State</th><th>Index / worktree</th><th>Mode</th></tr></thead><tbody>${task.preexistingEntries.map((entry) => `<tr><td>${escapeHtml(entry.path)}</td><td>${escapeHtml(entry.changeType)}</td><td>${escapeHtml(entry.indexStatus)} / ${escapeHtml(entry.worktreeStatus)}</td><td>${escapeHtml(entry.mode ?? "unknown")}</td></tr>`).join("") || "<tr><td colspan=4>None</td></tr>"}</tbody></table>${task.diffArtifact ? `<p>Full diff: <code>${escapeHtml(task.diffArtifact)}</code></p>` : ""}</section>
 <section><h3>Policy results and score breakdown</h3><p>Policy score: ${escapeHtml(task.score)} / 100</p><table><thead><tr><th>Rule</th><th>Outcome</th><th>Penalty</th><th>Summary</th><th>Evidence</th></tr></thead><tbody>${task.policies.map((policy) => `<tr><td>${escapeHtml(policy.ruleId)}</td><td>${escapeHtml(policy.outcome)}</td><td>${escapeHtml(policy.penalty)}</td><td>${escapeHtml(policy.summary)}</td><td><details><summary>View</summary><pre>${escapeHtml(JSON.stringify(policy.evidence, null, 2))}</pre></details></td></tr>`).join("") || "<tr><td colspan=5>No policy results</td></tr>"}</tbody></table></section>
 <section><h3>Failures</h3><pre>${escapeHtml(task.failures.join("\n") || "None")}</pre></section></article>`).join("")}

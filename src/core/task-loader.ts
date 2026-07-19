@@ -4,7 +4,7 @@ import { isMap, isScalar, parseDocument } from "yaml";
 import { z } from "zod";
 import { AriadneError } from "./errors.js";
 import { DEFAULT_IO_CONCURRENCY, mapWithConcurrency } from "./bounded-map.js";
-import type { AriadneTask, LegacyConfigVersion } from "../types/index.js";
+import { CURRENT_CONFIG_VERSION, type AriadneTask, type LegacyConfigVersion } from "../types/index.js";
 
 export const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -41,6 +41,41 @@ const V4TaskSchema = BaseTaskSchema.extend({
   }).strict().default({ attempts: 1, delayMs: 0, backoff: "fixed" }),
   verify: z.array(ProcessSpecSchema).optional()
 }).strict();
+
+const BenchmarkFailureActionSchema = z.union([
+  z.enum(["zero", "keep", "disqualify"]),
+  z.object({ cap: z.number().min(0).max(100) }).strict()
+]);
+
+const AnchorDescription = z.string().trim().min(1, "rubric anchor descriptions must not be empty");
+const BenchmarkRubricSchema = z.object({
+  0: AnchorDescription,
+  10: AnchorDescription,
+  20: AnchorDescription,
+  30: AnchorDescription,
+  40: AnchorDescription,
+  50: AnchorDescription,
+  60: AnchorDescription,
+  70: AnchorDescription,
+  80: AnchorDescription,
+  90: AnchorDescription,
+  100: AnchorDescription
+}).strict();
+
+const V5TaskSchema = V4TaskSchema.safeExtend({
+  benchmark: z.object({
+    version: z.literal(1),
+    id: z.string().trim().regex(TASK_ID_PATTERN, "benchmark id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}"),
+    rubric: BenchmarkRubricSchema,
+    context_files: z.array(z.string().trim().min(1)),
+    failure_policy: z.object({
+      agent_failed: BenchmarkFailureActionSchema,
+      verification_failed: BenchmarkFailureActionSchema,
+      timeout: BenchmarkFailureActionSchema,
+      policy_failed: BenchmarkFailureActionSchema
+    }).strict()
+  }).strict().optional()
+});
 
 function isInside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
@@ -123,7 +158,7 @@ function duplicateTaskIdError(id: string, files: string[]): AriadneError {
 export async function loadTasks(
   projectRoot: string,
   tasksDirectory: string,
-  contractVersion: LegacyConfigVersion | 4 = 4
+  contractVersion: LegacyConfigVersion | typeof CURRENT_CONFIG_VERSION = CURRENT_CONFIG_VERSION
 ): Promise<AriadneTask[]> {
   const canonicalRoot = await fs.realpath(projectRoot).catch(() => path.resolve(projectRoot));
   const unresolvedDirectory = path.resolve(canonicalRoot, tasksDirectory);
@@ -223,8 +258,18 @@ export async function loadTasks(
 
   return records.map((record) => {
     const document = parseDocument(record.source);
+    if (document.errors.length > 0) {
+      throw new AriadneError({
+        category: "task_loading",
+        code: "TASK_YAML_INVALID",
+        stage: "loading",
+        source: record.relativeFile,
+        message: `Could not parse task ${record.relativeFile}: ${document.errors[0].message}`,
+        correction: "Remove duplicate mapping keys or fix the YAML syntax."
+      });
+    }
     const rawTask = document.toJSON();
-    const schema = contractVersion === 4 ? V4TaskSchema : contractVersion === 3 ? V3TaskSchema : LegacyTaskSchema;
+    const schema = contractVersion === CURRENT_CONFIG_VERSION ? V5TaskSchema : contractVersion === 4 ? V4TaskSchema : contractVersion === 3 ? V3TaskSchema : LegacyTaskSchema;
     const parsed = schema.safeParse(rawTask ?? {});
     if (!parsed.success) {
       const issues = parsed.error.issues.map((issue) => `${issue.path.length === 0 ? "(root)" : issue.path.join(".")}: ${issue.message}`);
@@ -254,11 +299,33 @@ export async function loadTasks(
       });
     }
 
-    const orchestration = contractVersion === 4
-      ? parsed.data as z.infer<typeof V4TaskSchema>
+    const orchestration = contractVersion === CURRENT_CONFIG_VERSION
+      ? parsed.data as z.infer<typeof V5TaskSchema>
+      : contractVersion === 4
+        ? parsed.data as z.infer<typeof V4TaskSchema>
       : contractVersion === 3
         ? { ...(parsed.data as z.infer<typeof V3TaskSchema>), workspaceMode: (parsed.data as z.infer<typeof V3TaskSchema>).parallelSafe ? "read-only" as const : "mutable" as const }
         : { ...parsed.data, dependsOn: [], workspaceMode: "mutable" as const, retry: { attempts: 1, delayMs: 0, backoff: "fixed" as const } };
+    const benchmark = contractVersion === CURRENT_CONFIG_VERSION
+      ? (parsed.data as z.infer<typeof V5TaskSchema>).benchmark
+      : undefined;
+    if (benchmark) {
+      for (const [index, contextFile] of benchmark.context_files.entries()) {
+        if (contextFile.includes("\0") || path.posix.isAbsolute(contextFile) || path.win32.isAbsolute(contextFile) || contextFile.replace(/\\/g, "/").split("/").includes("..")) {
+          throw new AriadneError({
+            category: "task_loading",
+            code: "BENCHMARK_CONTEXT_PATH_INVALID",
+            stage: "validated",
+            source: record.relativeFile,
+            fieldPath: `benchmark.context_files.${index}`,
+            offendingValue: contextFile,
+            message: "Benchmark context paths must stay inside the project root.",
+            expected: "A repository-relative path without '..' traversal segments.",
+            correction: "Use only repository-relative benchmark context files."
+          });
+        }
+      }
+    }
     return {
       id,
       name: parsed.data.name ?? id,
@@ -268,7 +335,8 @@ export async function loadTasks(
       dependsOn: orchestration.dependsOn,
       workspaceMode: orchestration.workspaceMode,
       retry: orchestration.retry,
-      ...((contractVersion === 3 || contractVersion === 4) && "verify" in orchestration && orchestration.verify !== undefined ? { verify: orchestration.verify } : {})
+      ...((contractVersion === 3 || contractVersion === 4 || contractVersion === CURRENT_CONFIG_VERSION) && "verify" in orchestration && orchestration.verify !== undefined ? { verify: orchestration.verify } : {}),
+      ...(benchmark ? { benchmark } : {})
     };
   });
 }

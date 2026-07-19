@@ -1,4 +1,4 @@
-version: 4
+version: 5
 
 agent:
   command:
@@ -6,6 +6,7 @@ agent:
     file: node
     args: [agent.mjs]
   timeout_ms: 600000
+  model_label: local-example-agent
 
 tasks:
   directory: "tasks"

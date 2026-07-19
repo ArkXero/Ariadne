@@ -9,8 +9,8 @@ const ProcessSpecSchema = z.discriminatedUnion("kind", [
 
 export const AriadneConfigSchema = z.object({
   version: z.literal(CURRENT_CONFIG_VERSION),
-  sourceVersion: z.union([z.literal("versionless"), z.literal(1), z.literal(2), z.literal(3), z.literal(CURRENT_CONFIG_VERSION)]),
-  agent: z.object({ command: ProcessSpecSchema, timeout_ms: z.number().int().positive() }).strict(),
+  sourceVersion: z.union([z.literal("versionless"), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(CURRENT_CONFIG_VERSION)]),
+  agent: z.object({ command: ProcessSpecSchema, timeout_ms: z.number().int().positive(), model_label: z.string().optional() }).strict(),
   tasks: z.object({ directory: z.string() }).strict(),
   verification: z.object({ commands: z.array(ProcessSpecSchema), timeout_ms: z.number().int().positive() }).strict(),
   execution: z.object({
@@ -28,7 +28,11 @@ export const AriadneConfigSchema = z.object({
     max_changed_files: z.number().int().nonnegative().optional(),
     max_diff_lines: z.number().int().nonnegative().optional(),
     forbidden_commands: z.array(z.string())
-  }).strict()
+  }).strict(),
+  benchmarking: z.object({
+    judge: z.object({ command: ProcessSpecSchema, model_label: z.string(), timeout_ms: z.number().int().positive() }).strict(),
+    blind_candidate_identity: z.boolean()
+  }).strict().optional()
 }).strict();
 
 export const RunRecordSchema = z.object({

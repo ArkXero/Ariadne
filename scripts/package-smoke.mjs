@@ -167,7 +167,7 @@ try {
 
   const help = run(binary, ["--help"], installRoot);
   assert(help.stdout.includes("Usage: ariadne"), "Installed CLI help output was invalid.");
-  for (const command of ["init", "doctor", "plan", "run", "resume", "rerun", "list", "report", "tui", "changes", "diff", "status", "apply", "discard", "worktree"]) {
+  for (const command of ["init", "doctor", "plan", "run", "benchmark", "resume", "rerun", "list", "report", "tui", "changes", "diff", "status", "apply", "discard", "worktree"]) {
     assert(run(binary, [command, "--help"], installRoot).stdout.includes(`Usage: ariadne ${command}`), `Installed ${command} help was invalid.`);
   }
   for (const command of ["list", "remove", "clean"]) {

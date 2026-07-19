@@ -11,6 +11,7 @@ import { rerunCommand } from "./commands/rerun.js";
 import { applyCommand, changesCommand, diffCommand, discardCommand, statusCommand } from "./commands/changes.js";
 import { worktreeCleanCommand, worktreeListCommand, worktreeRemoveCommand } from "./commands/worktree.js";
 import { tuiCommand } from "./commands/tui.js";
+import { benchmarkCommand, exitCodeForBenchmark } from "./commands/benchmark.js";
 import { AriadneError, formatAriadneError } from "./core/errors.js";
 import { getAriadneVersion } from "./core/version.js";
 import type { FailureMode, IsolationStrategy } from "./types/index.js";
@@ -30,6 +31,7 @@ function exitCodeForError(error: unknown): number {
   if (error.category === "repository_validation") return 4;
   if (error.category === "workspace_preparation" || error.category === "workspace_management") return 14;
   if (error.category === "promotion_conflict") return 15;
+  if (error.category === "benchmark_protocol") return 16;
   return 70;
 }
 
@@ -147,6 +149,14 @@ program.command("run [taskIds...]").description("Plan and run a local task workf
     const options = command.optsWithGlobals<GlobalOptions>();
     const result = await runCommand({ cwd: process.cwd(), configPath: local.config, taskIds: selectedIds(taskIds, local.task, local.all), concurrency: local.concurrency, failureMode: local.failureMode, isolation: local.isolation, allowDirtyBase: local.allowDirtyBase, json: options.json, quiet: options.quiet });
     process.exitCode = exitCodeForBatch(result.batch, result.signal);
+  });
+
+program.command("benchmark <task-id>").description("Run one professional benchmark task with an independent configured judge.")
+  .option("-c, --config <path>", "Path to Ariadne config file.", "ariadne.yml")
+  .action(async (taskId: string, local: { config: string }, command: Command) => {
+    const options = command.optsWithGlobals<GlobalOptions>();
+    const result = await benchmarkCommand({ cwd: process.cwd(), configPath: local.config, taskId, json: options.json, quiet: options.quiet });
+    process.exitCode = exitCodeForBenchmark(result.batch, result.benchmark, result.signal);
   });
 
 program.command("resume <batchId>").description("Continue a compatible interrupted, incomplete, or retry-eligible batch.")

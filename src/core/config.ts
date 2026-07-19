@@ -41,12 +41,7 @@ const ChecksSchema = z.object({
   forbidden_commands: []
 });
 
-const V4ConfigSchema = z.object({
-  version: z.literal(CURRENT_CONFIG_VERSION),
-  agent: z.object({
-    command: ProcessSpecSchema,
-    timeout_ms: TimeoutSchema.default(DEFAULT_AGENT_TIMEOUT_MS)
-  }).strict(),
+const ConfigTailSchema = {
   tasks: z.object({
     directory: NonEmptyString.default(".ariadne/tasks")
   }).strict().default({ directory: ".ariadne/tasks" }),
@@ -68,6 +63,33 @@ const V4ConfigSchema = z.object({
     }).strict().default({ retention: "on-failure", preparation: { commands: [], timeout_ms: DEFAULT_PREPARATION_TIMEOUT_MS } })
   }).strict().default({ termination_grace_ms: DEFAULT_TERMINATION_GRACE_MS, concurrency: 1, failure_mode: "continue", isolation: "shared", worktree: { retention: "on-failure", preparation: { commands: [], timeout_ms: DEFAULT_PREPARATION_TIMEOUT_MS } } }),
   checks: ChecksSchema
+};
+
+const V5ConfigSchema = z.object({
+  version: z.literal(CURRENT_CONFIG_VERSION),
+  agent: z.object({
+    command: ProcessSpecSchema,
+    timeout_ms: TimeoutSchema.default(DEFAULT_AGENT_TIMEOUT_MS),
+    model_label: NonEmptyString
+  }).strict(),
+  ...ConfigTailSchema,
+  benchmarking: z.object({
+    judge: z.object({
+      command: ProcessSpecSchema,
+      model_label: NonEmptyString,
+      timeout_ms: TimeoutSchema.default(DEFAULT_AGENT_TIMEOUT_MS)
+    }).strict(),
+    blind_candidate_identity: z.boolean().default(true)
+  }).strict().optional()
+}).strict();
+
+const V4ConfigSchema = z.object({
+  version: z.literal(4),
+  agent: z.object({
+    command: ProcessSpecSchema,
+    timeout_ms: TimeoutSchema.default(DEFAULT_AGENT_TIMEOUT_MS)
+  }).strict(),
+  ...ConfigTailSchema
 }).strict();
 
 const V3ConfigSchema = z.object({
@@ -124,7 +146,7 @@ function validationError(source: string, error: z.ZodError): AriadneError {
     stage: "loading",
     source,
     message: `Invalid Ariadne configuration:\n${issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n")}`,
-    expected: `A strict Ariadne configuration with version ${CURRENT_CONFIG_VERSION}, or a compatible versionless, v1, v2, or v3 configuration.`,
+    expected: `A strict Ariadne configuration with version ${CURRENT_CONFIG_VERSION}, or a compatible versionless, v1, v2, v3, or v4 configuration.`,
     correction: "Fix the listed fields and run \"ariadne doctor\" again.",
     details: { issues }
   });
@@ -174,6 +196,10 @@ function legacyExecution(execution: { termination_grace_ms: number; concurrency:
 
 function normalizeV3Config(config: z.infer<typeof V3ConfigSchema>): AriadneConfig {
   return { ...config, version: CURRENT_CONFIG_VERSION, sourceVersion: 3, execution: legacyExecution(config.execution) };
+}
+
+function normalizeV4Config(config: z.infer<typeof V4ConfigSchema>): AriadneConfig {
+  return { ...config, version: CURRENT_CONFIG_VERSION, sourceVersion: 4 };
 }
 
 function freezeDeep<T>(value: T): T {
@@ -305,19 +331,23 @@ export async function loadConfig(cwd: string, configPath = "ariadne.yml"): Promi
   const warnings: string[] = [];
 
   if (rawVersion === CURRENT_CONFIG_VERSION) {
-    const parsed = V4ConfigSchema.safeParse(rawConfig);
+    const parsed = V5ConfigSchema.safeParse(rawConfig);
     if (!parsed.success) throw validationError(resolvedPath, parsed.error);
     config = { ...parsed.data, sourceVersion: CURRENT_CONFIG_VERSION };
+  } else if (rawVersion === 4) {
+    const parsed = V4ConfigSchema.safeParse(rawConfig);
+    if (!parsed.success) throw validationError(resolvedPath, parsed.error);
+    config = normalizeV4Config(parsed.data);
   } else if (rawVersion === 3) {
     const parsed = V3ConfigSchema.safeParse(rawConfig);
     if (!parsed.success) throw validationError(resolvedPath, parsed.error);
     config = normalizeV3Config(parsed.data);
-    warnings.push("Configuration version 3 is deprecated; migrate to version 4 for explicit workspace isolation and change promotion. V3 parallelSafe: true tasks adapt to workspaceMode: read-only.");
+    warnings.push("Configuration version 3 is deprecated; migrate to version 5. V3 parallelSafe: true tasks adapt to workspaceMode: read-only.");
   } else if (rawVersion === 2) {
     const parsed = V2ConfigSchema.safeParse(rawConfig);
     if (!parsed.success) throw validationError(resolvedPath, parsed.error);
     config = normalizeV2Config(parsed.data);
-    warnings.push("Configuration version 2 is deprecated; migrate to version 4 for workflows and isolated execution.");
+    warnings.push("Configuration version 2 is deprecated; migrate to version 5 for workflows, isolated execution, and model provenance.");
   } else if (rawVersion === undefined || rawVersion === 1) {
     const parsed = LegacyConfigSchema.safeParse(rawConfig);
     if (!parsed.success) throw validationError(resolvedPath, parsed.error);
@@ -325,8 +355,8 @@ export async function loadConfig(cwd: string, configPath = "ariadne.yml"): Promi
     config = normalizeLegacyConfig(parsed.data, sourceVersion);
     warnings.push(
       sourceVersion === "versionless"
-        ? "Versionless configuration is deprecated; migrate to version 4 and explicit process specs."
-        : "Configuration version 1 is deprecated; migrate command strings to version 4 process specs."
+        ? "Versionless configuration is deprecated; migrate to version 5 and explicit process specs."
+        : "Configuration version 1 is deprecated; migrate command strings to version 5 process specs."
     );
   } else if (typeof rawVersion !== "number" || !Number.isInteger(rawVersion)) {
     throw new AriadneError({
@@ -349,7 +379,7 @@ export async function loadConfig(cwd: string, configPath = "ariadne.yml"): Promi
       message: `Configuration version ${rawVersion} is not supported.`,
       fieldPath: "version",
       offendingValue: rawVersion,
-      expected: `Configuration version 1, 2, 3, or ${CURRENT_CONFIG_VERSION}.`,
+      expected: `Configuration version 1, 2, 3, 4, or ${CURRENT_CONFIG_VERSION}.`,
       correction: rawVersion > CURRENT_CONFIG_VERSION
         ? "Upgrade Ariadne to a version that supports this configuration."
         : `Migrate the configuration to version ${CURRENT_CONFIG_VERSION}.`

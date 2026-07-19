@@ -1,12 +1,12 @@
-export const CURRENT_CONFIG_VERSION = 4 as const;
-export const CURRENT_RUN_SCHEMA_VERSION = 4 as const;
-export const CURRENT_BATCH_SCHEMA_VERSION = 2 as const;
+export const CURRENT_CONFIG_VERSION = 5 as const;
+export const CURRENT_RUN_SCHEMA_VERSION = 5 as const;
+export const CURRENT_BATCH_SCHEMA_VERSION = 3 as const;
 export const CURRENT_WORKSPACE_SCHEMA_VERSION = 1 as const;
 export const CURRENT_PROMOTION_SCHEMA_VERSION = 2 as const;
 export const CURRENT_CHANGE_ARTIFACT_SCHEMA_VERSION = 2 as const;
 export const CURRENT_MANAGEMENT_ACTION_SCHEMA_VERSION = 1 as const;
 
-export type LegacyConfigVersion = "versionless" | 1 | 2 | 3;
+export type LegacyConfigVersion = "versionless" | 1 | 2 | 3 | 4;
 export type IsolationStrategy = "shared" | "worktree";
 export type WorktreeRetention = "always" | "on-failure" | "never";
 export type WorkspaceMode = "mutable" | "read-only";
@@ -28,6 +28,7 @@ export interface AriadneConfig {
   agent: {
     command: ProcessSpec;
     timeout_ms: number;
+    model_label?: string;
   };
   tasks: {
     directory: string;
@@ -55,6 +56,14 @@ export interface AriadneConfig {
     max_diff_lines?: number;
     forbidden_commands: string[];
   };
+  benchmarking?: {
+    judge: {
+      command: ProcessSpec;
+      model_label: string;
+      timeout_ms: number;
+    };
+    blind_candidate_identity: boolean;
+  };
 }
 
 export interface LoadedConfig {
@@ -74,6 +83,20 @@ export interface AriadneTask {
   workspaceMode: WorkspaceMode;
   retry: RetryPolicy;
   verify?: ProcessSpec[];
+  benchmark?: BenchmarkTaskContract;
+}
+
+export const BENCHMARK_ANCHORS = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const;
+export type BenchmarkAnchor = typeof BENCHMARK_ANCHORS[number];
+export type BenchmarkFailureOutcome = "agent_failed" | "verification_failed" | "timeout" | "policy_failed";
+export type BenchmarkFailureAction = "zero" | "keep" | "disqualify" | { cap: number };
+
+export interface BenchmarkTaskContract {
+  version: 1;
+  id: string;
+  rubric: Record<BenchmarkAnchor, string>;
+  context_files: string[];
+  failure_policy: Record<BenchmarkFailureOutcome, BenchmarkFailureAction>;
 }
 
 export type FailureMode = "continue" | "fail-fast";
@@ -100,6 +123,9 @@ export type LifecycleStage =
   | "workspace_cleanup"
   | "evaluating_policy"
   | "scoring"
+  | "benchmark_packet"
+  | "judging"
+  | "benchmark_scoring"
   | "persisting"
   | "completed";
 
@@ -121,6 +147,7 @@ export type FailureCategory =
   | "verification_nonzero"
   | "trace_collection"
   | "policy_violation"
+  | "benchmark_protocol"
   | "persistence"
   | "user_interruption"
   | "internal";
@@ -387,7 +414,66 @@ export interface TaskRunResult {
   trace?: RepositoryTrace;
   policies: PolicyResult[];
   score: ScoreBreakdown;
+  benchmark?: BenchmarkResult;
   failures: FailureRecord[];
+}
+
+export type BenchmarkQualification = "qualified" | "disqualified" | "unscored";
+export type BenchmarkStatus = "scored" | "unscored" | "failed";
+
+export interface BenchmarkJudgeResponse {
+  score: number;
+  lower_anchor: BenchmarkAnchor;
+  upper_anchor: BenchmarkAnchor;
+  reason: string;
+  evidence: string[];
+}
+
+export interface BenchmarkOmission {
+  path: string;
+  source: "changed" | "context" | "diff";
+  reason: "binary" | "oversized" | "forbidden" | "secret-like" | "symlink" | "outside-root" | "missing" | "not-file" | "unavailable";
+  detail?: string;
+}
+
+export interface BenchmarkResult {
+  schemaVersion: 1;
+  benchmarkId: string;
+  taskId: string;
+  executionOutcome: TaskOutcome;
+  policyScore: number;
+  status: BenchmarkStatus;
+  qualification: BenchmarkQualification;
+  candidateModel: string;
+  judgeModel: string;
+  blindCandidateIdentity: boolean;
+  rawScore?: number;
+  effectiveScore?: number | null;
+  failurePolicy?: {
+    outcome: BenchmarkFailureOutcome;
+    action: BenchmarkFailureAction;
+  };
+  reason?: string;
+  evidence?: string[];
+  fingerprints: {
+    benchmark: string;
+    context?: string;
+    packet?: string;
+  };
+  packet?: {
+    artifact: string;
+    includedChangedFiles: string[];
+    includedContextFiles: string[];
+    omissions: BenchmarkOmission[];
+  };
+  judge?: {
+    response?: BenchmarkJudgeResponse;
+    process: ProcessResult;
+  };
+  failure?: {
+    code: string;
+    message: string;
+  };
 }
 
 export interface RunOwner {
@@ -406,7 +492,7 @@ export interface RunSummary {
 }
 
 export interface RunRecord {
-  schemaVersion: 2 | 3 | typeof CURRENT_RUN_SCHEMA_VERSION;
+  schemaVersion: 2 | 3 | 4 | typeof CURRENT_RUN_SCHEMA_VERSION;
   runId: string;
   status: RunStatus;
   startedAt: string;
@@ -629,7 +715,7 @@ export interface BatchSummary {
 }
 
 export interface BatchRecord {
-  schemaVersion: 1 | typeof CURRENT_BATCH_SCHEMA_VERSION;
+  schemaVersion: 1 | 2 | typeof CURRENT_BATCH_SCHEMA_VERSION;
   kind: "batch";
   runId: string;
   batchId: string;
@@ -660,6 +746,7 @@ export interface BatchRecord {
     kind: "resume" | "rerun";
     sourceBatchId: string;
   };
+  benchmark?: BenchmarkResult;
   summary: BatchSummary;
   artifacts: {
     manifest: string;

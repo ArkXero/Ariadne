@@ -16,6 +16,7 @@ ariadne init [--yes|--custom]
 ariadne doctor [--config <path>]
 ariadne plan [task-id...] [--all] [--concurrency <n>] [--failure-mode continue|fail-fast] [--isolation shared|worktree] [--allow-dirty-base]
 ariadne run [task-id...] [--task <id>]... [--all] [--concurrency <n>] [--failure-mode continue|fail-fast] [--isolation shared|worktree] [--allow-dirty-base]
+ariadne benchmark <task-id> [--config <path>]
 ariadne resume <batch-id-or-path> [--concurrency <n>] [--allow-dirty-base]
 ariadne rerun <batch-id-or-path> (--failed|--blocked|--all|--task <id>...) [--isolation shared|worktree] [--allow-dirty-base]
 ariadne list [--tasks|--batches] [--unapplied|--applied|--discarded] [--format compact|wide|json|csv|markdown] [--output <path>]
@@ -33,9 +34,11 @@ ariadne worktree clean [--dry-run]
 
 Interactive `init` starts with Default versus Custom setup. Default is repository-aware; Custom covers the agent, imported script tasks, dependencies, isolation, concurrency, retries, file protections, limits, and timeout before a YAML/file-change review. Ctrl-C or Cancel at a prompt exits before writes.
 
-`--yes` accepts detected defaults without prompting. `--custom` requires an interactive terminal. Plain non-TTY `init` retains the portable example configuration for automation. If `ariadne.yml` already exists, non-TTY initialization changes nothing. Interactive replacement requires a diff review, validates the proposed v4 config in a disposable directory, writes an `ariadne.yml.backup-*` file, and atomically replaces the config; existing task files are skipped rather than overwritten.
+`--yes` accepts detected defaults without prompting. `--custom` requires an interactive terminal. Plain non-TTY `init` retains the portable example configuration for automation. If `ariadne.yml` already exists, non-TTY initialization changes nothing. Interactive replacement requires a diff review, validates the proposed v5 config in a disposable directory, writes an `ariadne.yml.backup-*` file, and atomically replaces the config; existing task files are skipped rather than overwritten.
 
 `plan` and `run` with no selectors include all tasks. Positional IDs and repeatable `run --task` values are merged and deduplicated case-insensitively. `--all` conflicts with explicit IDs. Selecting a task includes its transitive dependency closure. The first human-readable `plan` in a project includes a field guide and records that it was shown under `.ariadne/onboarding/`; `--quiet` and `--json` never show or record the guide. `plan` launches nothing and creates no execution records.
+
+`benchmark` accepts exactly one task ID. It validates the v5 judge configuration and complete task benchmark contract before candidate execution, runs the existing dependency/isolation/verification workflow, and judges only the final selected-task attempt in a fresh process. `--json` returns the structured benchmark result plus canonical batch and child-run views. Ordinary `run`, resume, rerun, plan, report, and the TUI never launch the benchmark judge. See [Professional benchmarking](./benchmarking.md).
 
 `resume` retains source isolation and requires the source semantic fingerprint and Git HEAD. Only concurrency and dirty-base acknowledgement can change. Successful child/result references are reused; missing refs and uncertain workspaces are requeued in fresh worktrees.
 
@@ -65,8 +68,9 @@ With no active workflow, `q` exits immediately. With an active workflow, `q` req
 | 13 | Policy or parallel-safety failure |
 | 14 | Workspace creation or preparation failure |
 | 15 | Promotion precondition or conflict |
+| 16 | Benchmark judge spawn, timeout, or protocol failure, when execution otherwise succeeded |
 | 70 | Internal or persistence failure |
 | 130 | SIGINT |
 | 143 | SIGTERM |
 
-Mixed final outcomes use interruption, internal failure, timeout, agent failure, verification failure, policy failure, then success. Failed attempts superseded by a successful retry do not determine the exit code. Blocked tasks inherit their causal failure. A detected parallel-safety violation exits 13.
+Mixed final outcomes use interruption, internal failure, timeout, agent failure, verification failure, policy failure, then success. Failed attempts superseded by a successful retry do not determine the exit code. Blocked tasks inherit their causal failure. A detected parallel-safety violation exits 13. Benchmarking preserves that execution-code precedence; code 16 is used only when the underlying execution would otherwise exit 0 and judging fails.

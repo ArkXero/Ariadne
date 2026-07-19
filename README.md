@@ -42,7 +42,7 @@ In an interactive terminal, `init` offers a repository-aware Default setup and a
 An existing `ariadne.yml` is never overwritten automatically. Interactive `init` defaults to validation and offers explicit Default/Custom replacement. Replacement always shows a diff, validates the proposal before touching the original, creates an ignored timestamped backup, and then performs atomic writes. Existing task files are never overwritten.
 
 ```yaml
-version: 4
+version: 5
 
 agent:
   command:
@@ -50,6 +50,7 @@ agent:
     file: codex
     args: [exec, --sandbox, workspace-write, "-"]
   timeout_ms: 600000
+  model_label: gpt-5.6-sol
 
 tasks:
   directory: .ariadne/tasks
@@ -79,7 +80,7 @@ checks:
   max_diff_lines: 500
 ```
 
-Direct `exec` specifications preserve argument boundaries. Use `{ kind: shell, command: "pnpm typecheck && pnpm test" }` only when shell syntax is intentional. Versionless and v1–v3 configurations remain readable through compatibility adapters and emit warnings.
+Direct `exec` specifications preserve argument boundaries. Use `{ kind: shell, command: "pnpm typecheck && pnpm test" }` only when shell syntax is intentional. Versionless and v1–v4 configurations remain readable through compatibility adapters. Version 5 adds declared model provenance and optional professional benchmarking.
 
 ## Workflow tasks
 
@@ -122,6 +123,8 @@ ariadne run package
 ariadne run --task lint --task test
 ariadne run --all --failure-mode fail-fast
 ariadne run --all --isolation worktree
+ariadne benchmark typescript-cli-quality
+ariadne benchmark typescript-cli-quality --json
 ariadne plan --all --isolation worktree --allow-dirty-base
 ariadne resume <batch-id> --concurrency 2
 ariadne rerun <batch-id> --failed
@@ -141,7 +144,7 @@ ariadne discard <run-id>
 ariadne worktree clean --dry-run
 ```
 
-`run` with no selectors remains equivalent to `--all`. `plan` is read-only: it creates no run or batch record and launches no processes. `list` defaults to child task attempts. `report` follows `.ariadne/latest.json` by default. Existing list format flags remain aliases. See [the CLI contract](./docs/cli-contract.md) for selection rules and exit codes.
+`run` with no selectors remains equivalent to `--all`. `plan` is read-only: it creates no run or batch record and launches no processes. `benchmark` accepts exactly one benchmark-enabled task and is intentionally outside basic onboarding; ordinary `run` never invokes a judge or incurs judge-model cost. `list` defaults to child task attempts. `report` follows `.ariadne/latest.json` by default. Existing list format flags remain aliases. See [Professional benchmarking](./docs/benchmarking.md) and [the CLI contract](./docs/cli-contract.md).
 
 `tui` opens a keyboard-first workflow control surface over the same planner, scheduler, review services, compatibility readers, and canonical report models as the CLI. Press `p` to plan and run work; use Tab on the dashboard to select attention categories and review results or retained workspaces. Result detail supports bounded per-file diffs, retry comparison, safe patch export, eligibility/preflight review, explicit apply/discard confirmation, and conflict diagnostics. Workspace detail supports pure cleanup previews followed by selected or bulk confirmed cleanup. Attached in-process workflows can still be cancelled, resumed, or rerun from history; persisted running/incomplete records from another or restarted process are labeled `no active runtime attached`. Redirected use exits 2 without ANSI output. `--verbose`, `--no-color`, `NO_COLOR`, ASCII fallback, responsive `100/60/40` layouts, contextual `?` help, and `r` reconciliation remain supported. Remote execution and mouse-first behavior remain out of scope. See [Ariadne TUI](./docs/tui.md).
 
@@ -167,7 +170,7 @@ ariadne worktree clean --dry-run
         └── artifacts/<task-id>/...
 ```
 
-A batch references child attempt manifests instead of duplicating process traces. Run record v4 adds workspace, prepared/source/result revisions, change artifacts, applicability, cleanup, and workflow linkage. Batch record v2 stores isolation and result references. Change-artifact v2 stores stable per-file identities, object/mode/symlink metadata, and bounded hashed text-diff artifacts. Promotion-record v2 stores structured conflicts, rollback state, and manual-recovery instructions. Management-action v1 records patch export and workspace cleanup outcomes. V1 change/promotion artifacts are normalized on read and never rewritten; execution and batch history remain immutable.
+A batch references child attempt manifests instead of duplicating process traces. Run record v5 and batch record v3 add optional structured benchmark results while preserving execution outcome and policy score separately; v4 run and v2 batch records remain readable. Change-artifact v2 stores stable per-file identities, object/mode/symlink metadata, and bounded hashed text-diff artifacts. Promotion-record v2 stores structured conflicts, rollback state, and manual-recovery instructions. Management-action v1 records patch export and workspace cleanup outcomes. Historical adapters do not rewrite old records.
 
 Manifest writes use a same-directory temporary file, sync, atomic rename, and best-effort directory sync. Latest pointers update only after valid terminal manifests exist. Raw stdout/stderr bytes stream to artifacts; manifests retain bounded 4 KiB head and 12 KiB tail previews.
 
@@ -208,6 +211,7 @@ Documentation:
 - [Workflow orchestration](./docs/workflows.md)
 - [Lifecycle](./docs/run-lifecycle.md)
 - [CLI contract](./docs/cli-contract.md)
+- [Professional benchmarking](./docs/benchmarking.md)
 - [Record formats](./docs/run-format.md)
 - [Agent adapters](./docs/agent-adapters.md)
 - [Task isolation](./docs/task-isolation.md)

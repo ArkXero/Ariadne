@@ -4,6 +4,9 @@
 
 ### Added
 
+- CLI-only `ariadne benchmark <task-id>` professional evaluation with v5 candidate/judge provenance, strict eleven-anchor portable rubrics, deterministic blind judge packets, independent raw/effective scoring, task-owned failure policy, and strict JSON judge validation.
+- Run-record v5 and batch-record v3 benchmark metadata, packet/context/benchmark fingerprints, judge process artifacts, policy-versus-benchmark terminal/JSON/HTML reporting, and advanced evaluator documentation.
+
 - Release-candidate verification through `pnpm release:check`, including clean source snapshots, repeated full gates, production dependency audit, package-contract validation, bounded-resource profiling, and a durable release test matrix.
 - Installed-tarball coverage for npm local/global/exec, pnpm local, direct binary invocation, paths with spaces and Unicode, and safe nested-directory refusal.
 
@@ -54,7 +57,7 @@
 - Attached runtime state reconciles from persistence every second, on manual refresh, and on completion; durable records remain authoritative and schemas remain compatible.
 - SIGINT/SIGTERM in the TUI request active cancellation and wait a configuration-derived bounded finalization interval before terminal restoration. Confirmed `q` detachment restores immediately and keeps the foreground process alive until completion.
 - Plain non-TTY `ariadne init` remains portable and idempotent; `init --yes` opts into detected defaults, while `init --custom` requires an interactive terminal.
-- `ariadne init` and maintained examples emit v4. V3 `parallelSafe` tasks adapt to `workspaceMode` with warnings.
+- `ariadne init` and maintained examples emit v5 with a non-specific local agent label. V4 configurations remain behavior-compatible, and V3 `parallelSafe` tasks adapt to `workspaceMode` with warnings.
 - Shared mode remains compatible; mutable tasks are exclusive and read-only mutation fails `workspace.read-only`. Worktree mode permits concurrent mutable tasks in distinct checkouts.
 - Worktree retries start fresh from source plus successful dependency results; shared retries retain iterative working-tree behavior.
 - `ariadne run` now creates one batch plus one independently persisted run record per task attempt; no-selector execution remains all-tasks compatible.
@@ -87,7 +90,7 @@
 
 ### Compatibility
 
-- Versionless/v1/v2/v3 configurations, v1/v2/v3 run records, and v1 batch records remain readable with explicit warnings. Historical records are never migrated in place.
+- Versionless/v1/v2/v3/v4 configurations, v1/v2/v3/v4 run records, and v1/v2 batch records remain readable through compatibility adapters. Historical records are never migrated in place.
 
 ### Known limitations
 

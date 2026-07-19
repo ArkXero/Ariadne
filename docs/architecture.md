@@ -5,7 +5,7 @@ Ariadne is a local Node.js ESM CLI. Commands remain thin; versioned core modules
 ## Data flow
 
 1. `src/cli.ts` parses global and command options and preserves stdout/stderr routing.
-2. `src/core/config.ts` strictly validates v4 or adapts versionless/v1/v2/v3 input into an immutable v4 configuration rooted at the canonical invocation directory.
+2. `src/core/config.ts` strictly validates v5 or adapts versionless/v1/v2/v3/v4 input into an immutable v5 configuration rooted at the canonical invocation directory.
 3. `src/core/task-loader.ts` discovers strict task files and applies source-version defaults.
 4. `src/core/workflow-graph.ts` canonicalizes dependencies and provides deterministic lookup, closure, cycle detection, dependents, and topological levels.
 5. `src/core/workflow-planner.ts` creates the semantic fingerprint and content-derived plan ID. The timestamp is informational and is excluded from plan identity.
@@ -18,9 +18,10 @@ Ariadne is a local Node.js ESM CLI. Commands remain thin; versioned core modules
 12. `src/core/workflow-runtime.ts` delivers immutable, process-local runtime events asynchronously through bounded subscriber queues. Process output is redacted before emission; persistence remains authoritative.
 13. `src/core/change-application.ts` owns typed result lists, summaries, manifests, bounded diff pages, retry comparison, apply/discard orchestration, and no-clobber patch export. `src/core/workspace-application.ts` owns typed workspace inspection, bounded no-symlink disk usage, pure cleanup previews, and selected/bulk cleanup.
 14. `src/core/promotion.ts` owns immutable promotion v2 events, eligibility, preview fingerprints, transactional preflight, conflict classification, abort verification, and recovery instructions. `src/core/management-lock.ts` serializes apply/discard/export/cleanup; `src/core/management-actions.ts` persists export and cleanup outcomes without mutating run or batch history.
-15. Versioned readers tolerate corrupt/future history and normalize change/promotion v1 data in memory. Canonical report views drive terminal, JSON, list, CSV, Markdown, offline HTML, and the TUI.
-16. `src/tui/services.ts` owns the one-active-workflow registry and adapts workflow/change/workspace application services into typed views. `src/tui/runtime-state.ts` reduces provisional events, bounds live buffers, and reconciles batch records. Ink components never read files, invoke Git, mutate records, copy patches, calculate disk usage, or delete directories. `src/tui/terminal.ts` separately owns alternate-screen entry and idempotent restoration.
-17. `src/theme.ts` owns the shared brand/report palette plus Green, Cyan, and Deep Slate TUI semantic accents and the terminal/CSS adapters used by Init, the TUI, and offline reports.
+15. `src/core/benchmark.ts` validates the advanced single-task benchmark prerequisites before execution, builds the bounded deterministic judge packet, launches a fresh judge process, validates the strict anchor interval, applies task-owned failure policy, and attaches benchmark metadata without altering execution outcome or policy score. Ordinary workflows do not call this module.
+16. Versioned readers tolerate corrupt/future history and normalize historical run/batch and change/promotion data in memory. Canonical report views drive terminal, JSON, list, CSV, Markdown, offline HTML, and the TUI.
+17. `src/tui/services.ts` owns the one-active-workflow registry and adapts workflow/change/workspace application services into typed views. `src/tui/runtime-state.ts` reduces provisional events, bounds live buffers, and reconciles batch records. Ink components never read files, invoke Git, mutate records, copy patches, calculate disk usage, or delete directories. `src/tui/terminal.ts` separately owns alternate-screen entry and idempotent restoration.
+18. `src/theme.ts` owns the shared brand/report palette plus Green, Cyan, and Deep Slate TUI semantic accents and the terminal/CSS adapters used by Init, the TUI, and offline reports.
 
 ## Ownership boundaries
 

@@ -36,18 +36,20 @@ function isLegacyRun(value: unknown): value is LegacyRunRecord {
   return typeof candidate.startedAt === "string" && (candidate.results === undefined || Array.isArray(candidate.results));
 }
 
-function adaptModernRun(value: unknown, version: 2 | 3): unknown {
+function adaptModernRun(value: unknown, version: 2 | 3 | 4): unknown {
   const adapted = structuredClone(value) as Record<string, any>;
   adapted.schemaVersion = CURRENT_RUN_SCHEMA_VERSION;
   if (adapted.config) {
-    adapted.config.version = 4;
+    adapted.config.version = 5;
     adapted.config.sourceVersion ??= version;
-    adapted.config.execution = {
-      termination_grace_ms: 2_000, concurrency: 1, failure_mode: "continue",
-      ...adapted.config.execution,
-      isolation: "shared",
-      worktree: { retention: "on-failure", preparation: { commands: [], timeout_ms: 600_000 } }
-    };
+    if (version !== 4) {
+      adapted.config.execution = {
+        termination_grace_ms: 2_000, concurrency: 1, failure_mode: "continue",
+        ...adapted.config.execution,
+        isolation: "shared",
+        worktree: { retention: "on-failure", preparation: { commands: [], timeout_ms: 600_000 } }
+      };
+    }
   }
   for (const result of adapted.results ?? []) {
     if (result.trace) {
@@ -79,6 +81,11 @@ function referencedArtifacts(run: RunRecord): string[] {
       artifacts.add(verification.command.stderrArtifact);
     }
     if (result.trace?.diffArtifact) artifacts.add(result.trace.diffArtifact);
+    if (result.benchmark?.packet) artifacts.add(result.benchmark.packet.artifact);
+    if (result.benchmark?.judge) {
+      artifacts.add(result.benchmark.judge.process.stdoutArtifact);
+      artifacts.add(result.benchmark.judge.process.stderrArtifact);
+    }
   }
   if (run.artifacts.report) artifacts.add(run.artifacts.report);
   return [...artifacts].sort();
@@ -123,11 +130,11 @@ export async function loadRunFile(runPath: string): Promise<RunLoadResult> {
     const warnings = await artifactWarnings(run, runPath);
     return { ok: true, path: runPath, run: abandonedView(run, warnings), warnings, legacy: false };
   }
-  if (version === 2 || version === 3) {
+  if (version === 2 || version === 3 || version === 4) {
     const parsed = RunRecordSchema.safeParse(adaptModernRun(raw, version));
     if (!parsed.success) return { ok: false, path: runPath, code: "malformed", error: `Invalid v${version} run record: ${parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ")}` };
     const run = { ...parsed.data, schemaVersion: version } as RunRecord;
-    const warnings = [`Run record version ${version} predates isolated workspace and promotion metadata.`, ...await artifactWarnings(run, runPath)];
+    const warnings = [`Run record version ${version} predates professional benchmark scoring metadata.`, ...await artifactWarnings(run, runPath)];
     return { ok: true, path: runPath, run: abandonedView(run, warnings), warnings, legacy: false };
   }
   if (version === undefined || version === 1) {

@@ -40,6 +40,21 @@ describe("workflow history and reports", () => {
     expect(history.warnings.join(" ")).toMatch(/broken|newer than supported/);
   });
 
+  it("loads historical v2 batch records without inventing benchmark results or rewriting history", async () => {
+    const cwd = await tempDir();
+    await writeProject(cwd);
+    const batch = await runWorkflow({ cwd });
+    const raw = JSON.parse(await readFile(batch.outputPath, "utf8"));
+    raw.schemaVersion = 2;
+    await writeFile(batch.outputPath, JSON.stringify(raw));
+    const before = await readFile(batch.outputPath, "utf8");
+    const loaded = await loadBatchFile(batch.outputPath, cwd);
+    expect(loaded.ok && loaded.batch.schemaVersion).toBe(2);
+    expect(loaded.ok && loaded.batch).not.toHaveProperty("benchmark");
+    expect(loaded.ok && loaded.warnings.join(" ")).toContain("version 2");
+    expect(await readFile(batch.outputPath, "utf8")).toBe(before);
+  });
+
   it("derives abandoned state for a dead same-host batch owner without rewriting history", async () => {
     const cwd = await tempDir();
     await writeProject(cwd);

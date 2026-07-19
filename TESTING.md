@@ -124,6 +124,8 @@ node /absolute/path/to/Ariadne/dist/cli.js tui
 
 Expected artifacts include batch/run records and reports, workspace metadata, change-artifact v2/result refs for non-empty successes, hashed per-file text diffs, all execution latest pointers, and offline child/batch HTML. Promotion commands add separate `.ariadne/promotions/*.json` v2 events; patch export and workspace cleanup add `.ariadne/actions/*.json` v1 events. None replaces latest execution pointers, and cleanup dry runs add no event.
 
+Professional benchmark coverage uses deterministic local fake candidate/judge processes. It validates v5 configuration/tasks before execution; blind, bounded packets; changed/context evidence and exclusions; strict anchor intervals; raw/effective score separation; every failure-policy action; judge failure exit 16; v4/run-record/batch-record adapters; and the guarantee that ordinary `ariadne run` never invokes the judge.
+
 ## CI matrix
 
 GitHub Actions runs the same `pnpm check` gate on Ubuntu with Node 20, 22, and 24 and on macOS/Windows with Node 22. Failed jobs pack and upload diagnostic npm artifacts only after the gate fails.

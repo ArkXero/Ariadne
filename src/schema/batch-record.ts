@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { FailureSchema } from "./task-result.js";
 import { CURRENT_BATCH_SCHEMA_VERSION } from "../types/index.js";
+import { BenchmarkResultSchema } from "./benchmark.js";
 
 const RetrySchema = z.object({ attempts: z.number().int().min(1).max(10), delayMs: z.number().int().min(0).max(3_600_000), backoff: z.enum(["fixed", "exponential"]) }).strict();
 const ProcessSpecSchema = z.discriminatedUnion("kind", [
@@ -58,6 +59,7 @@ export const BatchRecordSchema = z.object({
   tasks: z.array(BatchTaskSchema), lifecycle: z.array(z.object({ stage: z.enum(["created", "planning", "running", "cancelling", "persisting", "completed"]), at: z.string().datetime(), taskId: z.string().optional(), detail: z.string().optional() }).strict()),
   failures: z.array(FailureSchema), warnings: z.array(z.string()),
   relation: z.object({ kind: z.enum(["resume", "rerun"]), sourceBatchId: z.string() }).strict().optional(),
+  benchmark: BenchmarkResultSchema.optional(),
   summary: z.object({ total: z.number().int().nonnegative(), succeeded: z.number().int().nonnegative(), failed: z.number().int().nonnegative(), blocked: z.number().int().nonnegative(), skipped: z.number().int().nonnegative(), interrupted: z.number().int().nonnegative(), incomplete: z.number().int().nonnegative(), retried: z.number().int().nonnegative(), score: z.number().min(0).max(100).nullable(), status: BatchStatusSchema, outcome: TaskOutcomeSchema }).strict(),
   artifacts: z.object({ manifest: z.string(), report: z.string().optional() }).strict()
 }).strict().superRefine((record, context) => {

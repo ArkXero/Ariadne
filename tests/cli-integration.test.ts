@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanupTempDirs, initGit, tempDir, writeProject } from "./helpers.js";
 
 const cliPath = path.resolve("dist/cli.js");
-const documentedCommands = ["init", "doctor", "plan", "run", "resume", "rerun", "list", "report", "tui", "changes", "diff", "status", "apply", "discard", "worktree"] as const;
+const documentedCommands = ["init", "doctor", "plan", "run", "benchmark", "resume", "rerun", "list", "report", "tui", "changes", "diff", "status", "apply", "discard", "worktree"] as const;
 
 function cli(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, [cliPath, ...args], {
@@ -25,7 +25,7 @@ describe("CLI integration", () => {
     const cwd = process.cwd();
     const help = cli(cwd, ["--help"]);
     expect(help.status).toBe(0);
-    expect(help.stdout).toMatch(/init|doctor|plan|run|resume|rerun|list|report|tui|changes|diff|status|apply|discard|worktree/);
+    expect(help.stdout).toMatch(/benchmark/);
     expect(cli(cwd, ["--version"]).stdout.trim()).toBe("0.1.0");
   });
 
@@ -81,7 +81,7 @@ describe("CLI integration", () => {
     await writeProject(cwd);
     const result = cli(cwd, ["run", "--json"]);
     expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ kind: "batch", schemaVersion: 2, outcome: "passed", batchStatus: "succeeded", manifestPath: expect.stringMatching(/^\.ariadne\/batches\//) });
+    expect(JSON.parse(result.stdout)).toMatchObject({ kind: "batch", schemaVersion: 3, outcome: "passed", batchStatus: "succeeded", manifestPath: expect.stringMatching(/^\.ariadne\/batches\//) });
     expect(result.stdout).not.toContain(cwd);
     expect(result.stderr).toContain("Running task: example");
   });

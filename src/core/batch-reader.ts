@@ -21,10 +21,10 @@ function abandoned(batch: BatchRecord, warnings: string[]): BatchRecord {
   return { ...batch, status: "abandoned", batchStatus: "abandoned", outcome: "internal_failed", summary: { ...batch.summary, status: "abandoned", outcome: "internal_failed" } };
 }
 
-function adaptV1Batch(value: unknown): unknown {
+function adaptHistoricalBatch(value: unknown, version: 1 | 2): unknown {
   const adapted = structuredClone(value) as Record<string, any>;
   adapted.schemaVersion = CURRENT_BATCH_SCHEMA_VERSION;
-  if (adapted.plan) {
+  if (version === 1 && adapted.plan) {
     adapted.plan.schemaVersion = 2;
     adapted.plan.isolation = "shared";
     adapted.plan.retention = "on-failure";
@@ -34,9 +34,11 @@ function adaptV1Batch(value: unknown): unknown {
       delete task.parallelSafe;
     }
   }
-  for (const task of adapted.tasks ?? []) {
-    task.workspaceMode = task.parallelSafe ? "read-only" : "mutable";
-    delete task.parallelSafe;
+  if (version === 1) {
+    for (const task of adapted.tasks ?? []) {
+      task.workspaceMode = task.parallelSafe ? "read-only" : "mutable";
+      delete task.parallelSafe;
+    }
   }
   return adapted;
 }
@@ -49,9 +51,9 @@ export async function loadBatchFile(filePath: string, cwd?: string): Promise<Bat
   }
   const version = raw && typeof raw === "object" ? (raw as Record<string, unknown>).schemaVersion : undefined;
   if (typeof version === "number" && version > CURRENT_BATCH_SCHEMA_VERSION) return { ok: false, path: filePath, code: "unsupported-version", error: `Batch record version ${version} is newer than supported version ${CURRENT_BATCH_SCHEMA_VERSION}.` };
-  const parsed = BatchRecordSchema.safeParse(version === 1 ? adaptV1Batch(raw) : raw);
+  const parsed = BatchRecordSchema.safeParse(version === 1 || version === 2 ? adaptHistoricalBatch(raw, version) : raw);
   if (!parsed.success) return { ok: false, path: filePath, code: "malformed", error: `Invalid batch record: ${parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ")}` };
-  const warnings: string[] = version === 1 ? ["Batch record version 1 predates isolated workspace and promotion metadata."] : [];
+  const warnings: string[] = version === 1 || version === 2 ? [`Batch record version ${version} predates professional benchmark scoring metadata.`] : [];
   const projectRoot = cwd
     ? await canonicalizePath(cwd)
     : path.dirname(path.dirname(path.dirname(path.dirname(await canonicalizePath(filePath)))));
@@ -63,7 +65,7 @@ export async function loadBatchFile(filePath: string, cwd?: string): Promise<Bat
       else if (!(await fs.pathExists(candidate))) warnings.push(`Batch ${parsed.data.batchId} is missing child run ${attempt.runId}: ${attempt.manifest}`);
     }
   }
-  const batch = { ...parsed.data, schemaVersion: version === 1 ? 1 as const : CURRENT_BATCH_SCHEMA_VERSION } as BatchRecord;
+  const batch = { ...parsed.data, schemaVersion: version === 1 ? 1 as const : version === 2 ? 2 as const : CURRENT_BATCH_SCHEMA_VERSION } as BatchRecord;
   return { ok: true, path: filePath, batch: abandoned(batch, warnings), warnings };
 }
 
