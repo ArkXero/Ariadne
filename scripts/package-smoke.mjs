@@ -282,7 +282,8 @@ try {
   run(binary, ["diff", isolatedRun.runId, "--output", ".ariadne/export/result.patch", "--quiet"], isolated, 2);
   run(binary, ["diff", isolatedRun.runId, "--output", ".ariadne/export/result.patch", "--force", "--quiet"], isolated);
   run(binary, ["apply", isolatedRun.runId, "--quiet"], isolated);
-  assert(await readFile(path.join(isolated, "target.txt"), "utf8") === "committed\nisolated\n", "Installed clean promotion did not update the primary checkout.");
+  const appliedContent = await readFile(path.join(isolated, "target.txt"), "utf8");
+  assert(appliedContent.replace(/\r\n/g, "\n") === "committed\nisolated\n", `Installed clean promotion did not update the primary checkout: ${JSON.stringify(appliedContent)}`);
   assert(JSON.parse(run(binary, ["status", isolatedRun.runId, "--json"], isolated).stdout).promotion === "applied", "Installed status did not report the applied result.");
   const appliedHistory = JSON.parse(run(binary, ["list", "--applied", "--json", "--quiet"], isolated).stdout);
   assert(appliedHistory.length === 1 && appliedHistory[0].run_id === isolatedRun.runId && appliedHistory[0].promotion === "applied", "Installed applied history filter was inconsistent.");
